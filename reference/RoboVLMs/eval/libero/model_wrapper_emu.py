@@ -70,7 +70,7 @@ class EmuVLAModel:
         self.image_processor.min_pixels = 80 * 80
 
         self.kwargs = dict(
-            mode='VLA',
+            mode='VLA_COT' if self.use_cot else 'VLA',
             padding="longest",
         )
         if self.use_fast:

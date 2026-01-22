@@ -928,7 +928,7 @@ class Emu3CoTDataset(Emu3SFTDataset):
             )
             append_segment(obs_prompt, supervise=False)
 
-            # reason_text = reason_entry.get('reasoning', '')
+            # reason_text = reason_entry.get('reasoning', '').strip()
             reason_text = "To complete the task, we can get to the next state like this: "
             reason_prompt = self.tokenizer(
                 self.tokenizer.bot_token + reason_text,
@@ -970,10 +970,6 @@ class Emu3CoTDataset(Emu3SFTDataset):
                 if self.args.apply_loss_on_only_action and not getattr(self.args, "with_cot", False):
                     sample['labels'] = torch.full_like(sample['labels'], self.args.ignore_index)
                 sample = self.append_action_to_sample(sample, action_ids)
-            decoded_input_ids = self.tokenizer.decode(sample["input_ids"])
-            with open("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/debug.txt", "r") as f:
-                f.write(str(decoded_input_ids))
-            exit(0)
             # finally, do padding
             sample = self.tokenizer.pad(
                 sample,
