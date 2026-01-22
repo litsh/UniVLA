@@ -10,7 +10,7 @@ from typing import List, Union
 from torch.utils.data import Dataset
 from PIL import Image
 import sys
-sys.path.append("/share/project/yuqi.wang/UniVLA")
+sys.path.append("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA")
 from models.tokenizer.action_tokenizer import ActionTokenizer
 from transformers import AutoModel, AutoImageProcessor, GenerationConfig, AutoProcessor
     
@@ -770,17 +770,13 @@ class Emu3CoTDataset(Emu3SFTDataset):
 
     def __init__(self, args: "DataArguments", tokenizer):
         super().__init__(args, tokenizer=tokenizer)
-    
-    def random_frames_to_tensor(self, img_list, T, action_prompt=None, reason_prompt=None):
-        start_idx = random.randint(0, len(img_list) - T)
 
-        selected_frames = [np.load(img_path) for img_path in img_list[start_idx:start_idx + T]]
-        tensor_frames = [torch.from_numpy(frame) for frame in selected_frames]
-        tensor = torch.stack(tensor_frames, dim=1)
-
-        selected_actions = action_prompt[start_idx:start_idx + T]
-        selected_reason = reason_prompt[start_idx:start_idx + T]
-        return tensor.squeeze(0), selected_actions, selected_reason
+    def load_token_clip(self, paths):
+        frames = [torch.from_numpy(np.load(path)) for path in paths]
+        if not frames:
+            raise ValueError("No token paths provided for clip loading.")
+        tensor = torch.stack(frames, dim=1)
+        return tensor.squeeze(0)
     
     def __getitem__(self, index: int):
 
@@ -795,10 +791,20 @@ class Emu3CoTDataset(Emu3SFTDataset):
                 frames_num = (len(image_tokens_path) // self.action_frames) * self.action_frames
         else:
             frames_num = self.action_frames if len(image_tokens_path) >= self.action_frames else len(image_tokens_path)
-        
+        reason_entry = random.choice(scene["reasoning"])
+        action = scene["action"]
 
-        action = scene["action"] 
-        image_tokens, action_tokens, reason_tokens = self.random_frames_to_tensor(image_tokens_path, frames_num, action_prompt=action, reason_prompt=scene["reasoning"])
+        start_idx = min(max(reason_entry.get("obs_idx", 0), 0), max(len(image_tokens_path) - frames_num, 0))
+        end_idx = start_idx + frames_num
+
+        selected_image_paths = image_tokens_path[start_idx:end_idx]
+        image_tokens = self.load_token_clip(selected_image_paths)
+
+        action_tokens = action[start_idx:end_idx]
+            
+        if self.use_gripper:
+            gripper_paths = scene["gripper_image"][start_idx:end_idx]
+            gripper_tokens = self.load_token_clip(gripper_paths)
         
         if self.video_format == "interleave":
             if self.actions_format == "fast":
@@ -891,32 +897,83 @@ class Emu3CoTDataset(Emu3SFTDataset):
         else:
             image_tokens = image_tokens[0:self.T,...]
             image_prompt = self.format_video_prompt(image_tokens)
-
-            reason_tokens = reason_tokens[0:self.T]
-
-            input = self.tokenizer.bos_token + prompt + image_prompt + self.tokenizer.bot_token + reason_tokens[0]['reasoning'] + self.tokenizer.eot_token
-
-            sample = self.tokenizer(
-                input,
+            prompt = f"Given the image of the current state, what actions should the robot take to {prompt}? Output the low-level action(s) to take."
+            text_prompt = self.tokenizer(
+                self.tokenizer.bos_token + prompt,
                 padding=False,
                 return_token_type_ids=False,
                 return_tensors="pt",
             )
-            labels = sample["input_ids"]
+            sample_input_ids = text_prompt["input_ids"][0]
+            sample_attention_mask = text_prompt["attention_mask"][0]
+            labels = torch.full_like(sample_input_ids, self.args.ignore_index)
 
-            # not use vision loss
-            labels = torch.where(torch.logical_and(labels >= self.bov, labels <= self.eov), self.args.ignore_index, labels)
+            def append_segment(segment, supervise=True):
+                nonlocal sample_input_ids, sample_attention_mask, labels
+                seg_ids = segment["input_ids"][0]
+                seg_mask = segment["attention_mask"][0]
+                sample_input_ids = torch.cat([sample_input_ids, seg_ids], dim=-1)
+                sample_attention_mask = torch.cat([sample_attention_mask, seg_mask], dim=-1)
+                if supervise:
+                    seg_labels = seg_ids.clone()
+                else:
+                    seg_labels = torch.full_like(seg_ids, self.args.ignore_index)
+                labels = torch.cat([labels, seg_labels], dim=-1)
 
-            sample["labels"] = labels
-            for k, v in sample.items():
-                sample[k] = v.squeeze(0)
+            obs_prompt = self.tokenizer(
+                image_prompt,
+                padding=False,
+                return_token_type_ids=False,
+                return_tensors="pt",
+            )
+            append_segment(obs_prompt, supervise=False)
+
+            # reason_text = reason_entry.get('reasoning', '')
+            reason_text = "To complete the task, we can get to the next state like this: "
+            reason_prompt = self.tokenizer(
+                self.tokenizer.bot_token + reason_text,
+                padding=False,
+                return_token_type_ids=False,
+                return_tensors="pt",
+            )
+            append_segment(reason_prompt, supervise=True)
+
+            goal_paths = reason_entry.get("goal_tokens", [])
+            if goal_paths:
+                goal_tokens = self.load_token_clip(goal_paths)
+                if goal_tokens.dim() == 2:
+                    goal_tokens = goal_tokens.unsqueeze(0)
+                goal_prompt = self.tokenizer(
+                    self.format_video_prompt(goal_tokens),
+                    padding=False,
+                    return_token_type_ids=False,
+                    return_tensors="pt",
+                )
+                append_segment(goal_prompt, supervise=True)
+
+            end_prompt = self.tokenizer(
+                self.tokenizer.eot_token,
+                padding=False,
+                return_token_type_ids=False,
+                return_tensors="pt",
+            )
+            append_segment(end_prompt, supervise=True)
+
+            sample = {
+                "input_ids": sample_input_ids,
+                "attention_mask": sample_attention_mask,
+                "labels": labels,
+            }
 
             # based on the actions_format, append the action information to the sample
             if self.actions:
-                if self.args.apply_loss_on_only_action:
+                if self.args.apply_loss_on_only_action and not getattr(self.args, "with_cot", False):
                     sample['labels'] = torch.full_like(sample['labels'], self.args.ignore_index)
                 sample = self.append_action_to_sample(sample, action_ids)
-            
+            decoded_input_ids = self.tokenizer.decode(sample["input_ids"])
+            with open("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/debug.txt", "r") as f:
+                f.write(str(decoded_input_ids))
+            exit(0)
             # finally, do padding
             sample = self.tokenizer.pad(
                 sample,
@@ -929,5 +986,6 @@ class Emu3CoTDataset(Emu3SFTDataset):
 
             if "labels" in sample:
                 sample["labels"] = self.pad_tensor(sample["labels"], self.tokenizer.model_max_length, self.args.ignore_index)
+        
         return sample
     

@@ -7,7 +7,7 @@ import pathlib
 import transformers as tf
 from datasets import Emu3SFTDataset
 import sys
-sys.path.append("/share/project/yuqi.wang/UniVLA/reference/Emu3")
+sys.path.append("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/reference/Emu3")
 from emu3.mllm import Emu3Config, Emu3Tokenizer, Emu3ForCausalLM, Emu3MoE, Emu3MoEConfig
 from transformers import AutoModel,Trainer
 from datasets import Emu3WorldModelDataset,Emu3RealRobotDataset,Emu3CoTDataset

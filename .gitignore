@@ -88,9 +88,11 @@ var/
 
 # PDM
 __pypackages__/
+# PyCharm
+*.iml
 
 # project management
 logs/
+data_storage/
+cot_debug/
 
-# PyCharm
-*.iml

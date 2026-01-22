@@ -230,9 +230,10 @@ data_config = {
         'min_pixels': 128 * 128,
         'interval': 1,
         'SIZE': (200, 200),
-        'VIDEO_ROOT': '/share/project/yuqi.wang/datasets/processed_data/libero_all',
-        'VIDEO_CODES_SAVE': '/share/project/yuqi.wang/datasets/processed_data/libero_all_gripper_codes_200',
-        'VIDEO_RECON_SAVE': '/share/project/yuqi.wang/datasets/processed_data/libero_recon_256'
+        'VIDEO_ROOT': '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_all',
+        # 'VIDEO_CODES_SAVE': '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_all_gripper_codes_200',
+        'VIDEO_CODES_SAVE': '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_all_codes_200',
+        'VIDEO_RECON_SAVE': '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_recon_256'
     },
     'bridge_orig': {
         'min_pixels': 128 * 128,
@@ -375,11 +376,11 @@ def get_data_config(process_data):
 
 if __name__ == "__main__":
 
-    MODEL_HUB = "BAAI/Emu3-VisionTokenizer"
-    path = "/share/project/yuqi.wang/UniVLA/pretrain/Emu3-VisionVQ"
+    MODEL_HUB = "/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/huggingface/Emu3-VisionTokenizer"
+    path = "/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/huggingface/Emu3-VisionTokenizer"
 
     # choose the dataset to process
-    process_data = 'Calvin'
+    process_data = 'libero'
 
     # current supported datasets
     simulator_list = ["Calvin", "Calvin_partial", "libero", 'libero_long', 'maniskill']
@@ -437,8 +438,8 @@ if __name__ == "__main__":
             images, image_paths = load_images(osp.join(VIDEO_ROOT, video), SIZE, interval)
         elif process_data == 'libero':
             # remember to process the images and gripper images
-            # images, image_paths = load_images(osp.join(VIDEO_ROOT, video, 'images'), SIZE, interval)
-            images, image_paths = load_images(osp.join(VIDEO_ROOT, video,'gripper_images'), SIZE, interval)
+            images, image_paths = load_images(osp.join(VIDEO_ROOT, video, 'images'), SIZE, interval)
+            # images, image_paths = load_images(osp.join(VIDEO_ROOT, video,'gripper_images'), SIZE, interval)
         elif process_data == 'Calvin_partial':
             images, image_paths = load_images(osp.join(VIDEO_ROOT, video,'rgb_static'), SIZE, interval)
             # images, image_paths = load_images(osp.join(VIDEO_ROOT, video,'rgb_gripper'), SIZE, interval)
