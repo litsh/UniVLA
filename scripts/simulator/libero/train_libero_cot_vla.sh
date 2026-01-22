@@ -6,12 +6,12 @@ NGPUS=8
 
 DATAPATH='/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/meta/libero_all_norm.pkl'
 ACTION_TOKENIZER_PATH="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/pretrain/fast"
-EXP_NAME="UNIVLA_LIBERO_VIDEO_BS192_8k"
+EXP_NAME="UNIVLA_LIBERO_CoTVLA_BS192_8k_gripper=False_debug"
+global_batch_size=192
+per_gpu_batch_size=3
+grad_accumulation_steps=$((global_batch_size / NGPUS / per_gpu_batch_size))
 export PYTHONPATH=$(pwd)
 
-global_batch_size=192
-per_gpu_batch_size=4
-grad_accumulation_steps=$((global_batch_size / NGPUS / per_gpu_batch_size))
 torchrun \
     --nproc_per_node=${NGPUS} \
     --nnodes=1 \
@@ -20,7 +20,7 @@ torchrun \
     --model_name_or_path /inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/huggingface/UniVLA/WORLD_MODEL_POSTTRAIN \
     --model_config_path /inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/configs/moe_fast_video.json \
     --deepspeed scripts/sft/zero3_H200.json \
-    --output_dir "logs/"${EXP_NAME} \
+    --output_dir "logs/${EXP_NAME}" \
     --learning_rate 8e-5 \
     --null_prompt_prob 0.15 \
     --weight_decay 0.1 \
@@ -36,21 +36,20 @@ torchrun \
     --dataloader_num_workers 12 \
     --lr_scheduler_type "cosine_with_min_lr" \
     --warmup_steps 50 \
-    --frames 2 \
+    --frames 1 \
     --action_frames 10 \
     --max_position_embeddings 3200 \
     --seed 42 \
     --logging_steps 20 \
     --gradient_checkpointing True \
+    --apply_loss_on_only_action True \
+    --actions True \
+    --actions_format "fast" \
+    --action_tokenizer_path ${ACTION_TOKENIZER_PATH} \
+    --use_gripper False \
     --per_device_train_batch_size ${per_gpu_batch_size} \
     --gradient_accumulation_steps ${grad_accumulation_steps} \
     --save_strategy steps \
     --save_steps 2000 \
     --eval_strategy no \
-    --apply_loss_on_only_vision False \
-    --apply_loss_on_only_action True \
-    --actions True \
-    --actions_format "fast" \
-    --use_gripper True \
-    --video_format "interleave" \
-    --action_tokenizer_path ${ACTION_TOKENIZER_PATH} \
+    --with_cot True 

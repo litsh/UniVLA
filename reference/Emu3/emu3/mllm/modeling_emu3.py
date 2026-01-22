@@ -59,7 +59,7 @@ if is_flash_attn_2_available():
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
 
 import sys
-sys.path.append("/share/project/yuqi.wang/UniVLA")
+sys.path.append("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA")
 from models.policy_head.noise_schedulers import FlowMatchingScheduler
 
 # This makes `_prepare_4d_causal_attention_mask` a leaf function in the FX graph.

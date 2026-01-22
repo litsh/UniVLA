@@ -25,6 +25,7 @@ from robovlms.utils.config_utils import load_config
 from model_wrapper_emu import EmuVLAModel
 from libero_utils import save_rollout_gif, get_libero_image, get_episode_length, get_libero_wrist_image, quat2axisangle
 from libero_utils import get_libero_dummy_action, get_libero_env
+sys.path.append("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/LIBERO")
 from libero.libero import benchmark
 
 logging.basicConfig(
@@ -156,7 +157,7 @@ def evaluate(
 
                     if action_counter == 0:
                         if model.use_cot:
-                            action, thought = model.step(obs_img, task_description)
+                            action, thought = model.step(observation, task_description)
                         else:
                             action = model.step(observation, task_description)
                             # from PIL import Image
@@ -291,6 +292,9 @@ def parser_args():
             "libero_goal",
             "libero_10",
             "libero_90",
+            "libero_spatial_occluded",
+            "libero_goal_occluded",
+            "libero_10_occluded",
         ],
         help="select evaluate LIBREO TASK SUITE",
     )
@@ -301,6 +305,8 @@ def parser_args():
     parser.add_argument("--no_action_ensemble", action="store_true")
     parser.add_argument('--cache_root', type=str, default="/share/project/yuqi.wang/UniVLA/logs/libero",
                         help="Root directory to store cache/logs.")
+    parser.add_argument("--with_cot", action="store_true", help="Enable CoT-style evaluation (subgoal reasoning).")
+    parser.add_argument("--cot_max_new_tokens", type=int, default=256, help="Max tokens when generating CoT reasoning and goal image.")
 
     args = parser.parse_args()
     return args
@@ -324,6 +330,8 @@ def main():
             vq_hub=args.vq_hub,
             vision_hub=args.vision_hub,
             device=torch.device("cuda"),
+            use_cot=args.with_cot,
+            cot_max_new_tokens=args.cot_max_new_tokens,
         )
 
     sr_path = os.path.join(eval_log_dir, f"success_rate_calvin.txt")

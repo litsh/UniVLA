@@ -5,7 +5,7 @@ import os
 import sys
 import numpy as np
 # This requires to download LIBERO repo
-sys.path.append("/share/project/yuqi.wang/UniVLA/reference/RoboVLMs-main/LIBERO")
+sys.path.append("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/LIBERO")
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from moviepy.editor import ImageSequenceClip

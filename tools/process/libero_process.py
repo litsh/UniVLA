@@ -7,14 +7,14 @@ import tensorflow as tf
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
 # Load the dataset, specify the data directory
-sub_dataname = 'libero_10_no_noops' # options: libero_goal_no_noops, libero_object_no_noops, libero_spatial_no_noops
-dataset_dirs = f"/share/project/yuqi.wang/datasets/robotics/libero_data/{sub_dataname}/1.0.0"
+sub_dataname = 'libero_10' # options: libero_goal_no_noops, libero_object_no_noops, libero_spatial_no_noops
+dataset_dirs = f"/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/openvla-oft/data_storage/original_libero_multiview/{sub_dataname}/1.0.0"
 builder = tfds.builder_from_directory(dataset_dirs)
 
 ds_all_dict = builder.as_dataset(split="train")
 
 # Set the output directory for processed data
-base_output_dir = "/share/project/yuqi.wang/datasets/processed_data/libero_all"
+base_output_dir = "/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero"
 os.makedirs(base_output_dir, exist_ok=True)
 
 count = 0
@@ -52,9 +52,11 @@ for episode in tqdm(ds_all_dict, desc="Processing episodes", unit="episode"):
         observation = step["observation"]
         action = step["action"]
 
-        image = observation["image"]
+        # image = observation["image"]
+        image = observation["agentview_rgb"]
         image = Image.fromarray(image.numpy())
-        gripper_image = observation["wrist_image"]
+        # gripper_image = observation["wrist_image"]
+        gripper_image = observation["eye_in_hand_rgb"]
         gripper_image = Image.fromarray(gripper_image.numpy())
 
         language = step["language_instruction"].numpy().decode()

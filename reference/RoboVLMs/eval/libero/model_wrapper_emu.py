@@ -8,7 +8,7 @@ from transformers import AutoModel, AutoImageProcessor, GenerationConfig, AutoPr
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.generation import LogitsProcessorList, PrefixConstrainedLogitsProcessor, UnbatchedClassifierFreeGuidanceLogitsProcessor
 import sys
-sys.path.append("/share/project/yuqi.wang/UniVLA/reference/Emu3")
+sys.path.append("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/reference/Emu3")
 from emu3.mllm import Emu3Tokenizer, Emu3ForCausalLM, Emu3Processor
 from emu3.mllm import Emu3MoE
 from transformers import LogitsProcessor
@@ -39,7 +39,9 @@ class EmuVLAModel:
         emu_hub,
         vq_hub,
         vision_hub,
-        device
+        device,
+        use_cot: bool = False,
+        cot_max_new_tokens: int = 256,
     ):
 
         self.emu_hub = emu_hub
@@ -57,8 +59,10 @@ class EmuVLAModel:
         self.use_fast = True
         self.use_one_step = False
         self.eoa_token_id = 151845
-        self.use_cot = False  # always disable CoT
-
+        self.use_cot = use_cot
+        self.cot_max_new_tokens = cot_max_new_tokens
+        if self.use_cot:
+            self.use_gripper = False
         self.video_mode = False
     
         # load model and tokenizer
@@ -107,8 +111,18 @@ class EmuVLAModel:
         self.image_tokenizer = AutoModel.from_pretrained(self.vision_hub, trust_remote_code=True).to(device).eval()
         self.processor = Emu3Processor(self.image_processor, self.image_tokenizer, self.tokenizer)
 
+        self.boa_token_id = self.tokenizer.convert_tokens_to_ids(self.tokenizer.boa_token)
+        self.eot_token_id = self.tokenizer.convert_tokens_to_ids(self.tokenizer.eot_token)
+        if self.use_cot:
+            self.COT_CONFIG = GenerationConfig(
+                pad_token_id=self.model.config.pad_token_id,
+                bos_token_id=self.model.config.bos_token_id,
+                eos_token_id=self.eot_token_id,
+                do_sample=False,
+            )
+
         # fast tokenization
-        fast_path = "/share/project/yuqi.wang/UniVLA/pretrain/fast"
+        fast_path = "/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/pretrain/fast"
         self.action_tokenizer = AutoProcessor.from_pretrained(fast_path, trust_remote_code=True)
 
         self.rgb_list = []
@@ -178,7 +192,11 @@ class EmuVLAModel:
         
         image_code, gripper_code = self.preprocess(image)
 
-        prompt,neg_prompt = goal,""
+        prompt_text = goal
+        if self.use_cot:
+            prompt_text = f"Given the image of the current state, what actions should the robot take to {goal}? Output the low-level action(s) to take."
+            
+        prompt,neg_prompt = prompt_text,""
 
         video_code = image_code.unsqueeze(1)
         gripper_code = gripper_code.unsqueeze(1) if self.use_gripper else None
@@ -249,6 +267,31 @@ class EmuVLAModel:
             final_inputs['attention_mask'] = concatenated_attention_mask
         else:
             final_inputs = pos_inputs
+        context_input_ids = final_inputs.input_ids.to(self.device)
+        context_attention_mask = final_inputs.attention_mask.to(self.device)
+        context_length = context_input_ids.shape[-1]
+        thought_text = ""
+
+        if self.use_cot:
+            with torch.no_grad():
+                cot_outputs = self.model.generate(
+                    context_input_ids,
+                    self.COT_CONFIG,
+                    max_new_tokens=self.cot_max_new_tokens,
+                    attention_mask=context_attention_mask,
+                )
+            cot_tokens = cot_outputs[:, context_length:]
+            thought_text = self.tokenizer.decode(cot_tokens[0], skip_special_tokens=True)
+            context_input_ids = cot_outputs
+            boa_tensor = torch.full(
+                (context_input_ids.size(0), 1),
+                self.boa_token_id,
+                dtype=context_input_ids.dtype,
+                device=context_input_ids.device,
+            )
+            context_input_ids = torch.cat([context_input_ids, boa_tensor], dim=1)
+            context_attention_mask = torch.ones_like(context_input_ids)
+            context_length = context_input_ids.shape[-1]
 
         if self.use_fast: 
             last_token_id = self.tokenizer.pad_token_id - 1
@@ -257,15 +300,15 @@ class EmuVLAModel:
             
             with torch.no_grad():
                 outputs = self.model.generate(
-                    final_inputs.input_ids.to(self.device),
+                    context_input_ids,
                     self.GENERATION_CONFIG,
                     max_new_tokens=80,
                     logits_processor=[action_id_processor],
-                    attention_mask=final_inputs.attention_mask.to(self.device),
+                    attention_mask=context_attention_mask,
                 )
             # omit the eoa token
-            orig_outputs = outputs[:, final_inputs.input_ids.shape[-1]:]
-            outputs = outputs[:, final_inputs.input_ids.shape[-1]:-1]
+            orig_outputs = outputs[:, context_length:]
+            outputs = outputs[:, context_length:-1]
             last_token_id_tensor = torch.tensor(last_token_id, dtype=outputs.dtype, device=outputs.device)
             processed_outputs = last_token_id_tensor - outputs
             action_outputs = self.action_tokenizer.decode(
@@ -294,7 +337,7 @@ class EmuVLAModel:
             action_pred = action
         
         if self.use_cot:
-            return action_pred, thought
+            return action_pred, [thought_text.replace("\n", "@")]
         else:
             return action_pred
     
