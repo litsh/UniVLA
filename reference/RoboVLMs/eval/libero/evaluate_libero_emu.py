@@ -8,6 +8,7 @@ import json
 import logging
 from pathlib import Path
 import time
+import tqdm
 from robovlms.utils.zero_to_fp32 import convert_zero_checkpoint_to_fp32_state_dict
 import sys
 import os
@@ -90,7 +91,7 @@ def evaluate(
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
-    for task_id in range(num_tasks_in_suite):
+    for task_id in tqdm.tqdm(range(num_tasks_in_suite), total=num_tasks_in_suite):
         # Get task
         task = task_suite.get_task(task_id)
 

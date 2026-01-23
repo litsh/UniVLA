@@ -281,7 +281,7 @@ class EmuVLAModel:
                     attention_mask=context_attention_mask,
                 )
             cot_tokens = cot_outputs[:, context_length:]
-            thought_text = self.tokenizer.decode(cot_tokens[0], skip_special_tokens=True)
+            thought_text = self.tokenizer.decode(cot_tokens[0], skip_special_tokens=False)
             context_input_ids = cot_outputs
             boa_tensor = torch.full(
                 (context_input_ids.size(0), 1),
