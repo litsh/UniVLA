@@ -11,13 +11,13 @@ from libero.libero.envs import OffScreenRenderEnv
 from moviepy.editor import ImageSequenceClip
 
 def get_episode_length(task_suite_name="libero_object") -> int:
-    if task_suite_name == "libero_spatial":
+    if task_suite_name == "libero_spatial" or task_suite_name == "libero_spatial_occluded":
         max_steps = 220  # longest training demo has 193 steps
-    elif task_suite_name == "libero_object":
+    elif task_suite_name == "libero_object" or task_suite_name == "libero_object_occluded":
         max_steps = 280  # longest training demo has 254 steps
-    elif task_suite_name == "libero_goal":
+    elif task_suite_name == "libero_goal" or task_suite_name == "libero_goal_occluded":
         max_steps = 300  # longest training demo has 270 steps
-    elif task_suite_name == "libero_10":
+    elif task_suite_name == "libero_10" or task_suite_name == "libero_10_occluded":
         max_steps = 520  # longest training demo has 505 steps
     elif task_suite_name == "libero_90":
         max_steps = 400  # longest training demo has 373 steps

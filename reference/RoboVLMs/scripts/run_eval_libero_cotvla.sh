@@ -1,5 +1,5 @@
 #!/bin/bash
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=6
 export ARNOLD_WORKER_GPU=1
 export ARNOLD_WORKER_NUM=1
 export ARNOLD_ID=0
@@ -41,8 +41,8 @@ python eval/libero/evaluate_libero_emu.py \
 --emu_hub $ckpt_dir \
 --no_nccl \
 --no_action_ensemble \
---task_suite_name libero_10 \
---cache_root /inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/libero/UNIVLA_LIBERO_CoTVLA_BS192_8k_gripper=False/10 \
+--task_suite_name libero_10_occluded \
+--cache_root /inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/libero/UNIVLA_LIBERO_CoTVLA_BS192_8k_gripper=False/10_occluded \
 --vision_hub /inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/huggingface/Emu3-VisionTokenizer \
 --vq_hub  /inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/huggingface/Emu3-Stage1 \
 --with_cot \
