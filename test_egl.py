@@ -4,7 +4,6 @@ import os
 os.environ["MUJOCO_GL"] = "egl"
 
 import OpenGL
-OpenGL.ERROR_CHECKING = False
 
 try:
     # This will attempt to initialize an EGL context

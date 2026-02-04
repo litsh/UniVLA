@@ -205,7 +205,8 @@ class Emu3Processor(ProcessorMixin):
                     gripper_prompt = self.format_video_prompt(gripper_tokens[idx], context_frames=context_frames)
                     prompt += gripper_prompt
                 # reasoning 
-                prompt +=self.tokenizer.bot_token
+                prompt += self.tokenizer.bot_token
+                prompt += "To complete the task, we can get to the next state like this: "
             elif mode == 'VLA_ALOHA':
                 _, h, w = video_tokens[idx].shape
                 t = frames

@@ -6,7 +6,7 @@ NGPUS=8
 
 DATAPATH='/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/meta/libero_all_norm.pkl'
 ACTION_TOKENIZER_PATH="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/pretrain/fast"
-EXP_NAME="UNIVLA_LIBERO_IMG_BS192_8k"
+EXP_NAME="UNIVLA_LIBERO_IMG_BS192_8k_debug"
 global_batch_size=192
 per_gpu_batch_size=6
 grad_accumulation_steps=$((global_batch_size / NGPUS / per_gpu_batch_size))

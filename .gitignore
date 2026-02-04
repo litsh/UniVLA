@@ -90,6 +90,7 @@ var/
 __pypackages__/
 # PyCharm
 *.iml
+core.*
 
 # project management
 logs/

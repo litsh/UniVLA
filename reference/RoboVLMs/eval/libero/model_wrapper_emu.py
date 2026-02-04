@@ -1,4 +1,5 @@
 import json
+import os
 import torch
 import numpy as np
 from queue import Queue
@@ -42,6 +43,7 @@ class EmuVLAModel:
         device,
         use_cot: bool = False,
         cot_max_new_tokens: int = 256,
+        use_gripper = True
     ):
 
         self.emu_hub = emu_hub
@@ -55,14 +57,14 @@ class EmuVLAModel:
         self.context_frames = 1
         self.predict_frames = 1
         self.action_dim = 7
-        self.use_gripper = True
         self.use_fast = True
         self.use_one_step = False
         self.eoa_token_id = 151845
         self.use_cot = use_cot
         self.cot_max_new_tokens = cot_max_new_tokens
-        if self.use_cot:
-            self.use_gripper = False
+        self.use_gripper = use_gripper
+        # if self.use_cot:
+        #     self.use_gripper = False
         self.video_mode = False
     
         # load model and tokenizer
@@ -92,11 +94,11 @@ class EmuVLAModel:
             )
 
     def init_config(self, device):
-        
+        attn_impl = os.environ.get("EMU_ATTENTION_IMPL", "flash_attention_2")
         self.model = Emu3MoE.from_pretrained(
             self.emu_hub,
             torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",
+            attn_implementation=attn_impl,
             trust_remote_code=True,
         )
         self.model.to(device).eval()
@@ -308,6 +310,11 @@ class EmuVLAModel:
                 )
             # omit the eoa token
             orig_outputs = outputs[:, context_length:]
+            # with open("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/cot_debug/debug_output.txt", "w") as f:
+            #     out = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
+            #     print(f"use_gripper: {self.use_gripper}")
+            #     print(out, file=f)
+            #     exit(0)
             outputs = outputs[:, context_length:-1]
             last_token_id_tensor = torch.tensor(last_token_id, dtype=outputs.dtype, device=outputs.device)
             processed_outputs = last_token_id_tensor - outputs

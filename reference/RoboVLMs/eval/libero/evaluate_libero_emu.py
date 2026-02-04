@@ -104,7 +104,7 @@ def evaluate(
         logger.info(f"\nTask: {task_description}")
         log_file.write(f"\nTask: {task_description}\n")
 
-        for episode_idx in range(num_trials_per_task):
+        for episode_idx in tqdm.tqdm(range(num_trials_per_task), total=num_trials_per_task):
             env.reset()
             model.reset()
 

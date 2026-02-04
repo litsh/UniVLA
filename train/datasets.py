@@ -897,6 +897,11 @@ class Emu3CoTDataset(Emu3SFTDataset):
         else:
             image_tokens = image_tokens[0:self.T,...]
             image_prompt = self.format_video_prompt(image_tokens)
+            if self.use_gripper:
+                gripper_tokens = gripper_tokens[0:self.T,...]
+                gripper_prompt = self.format_video_prompt(gripper_tokens)
+                image_prompt += gripper_prompt
+                
             prompt = f"Given the image of the current state, what actions should the robot take to {prompt}? Output the low-level action(s) to take."
             text_prompt = self.tokenizer(
                 self.tokenizer.bos_token + prompt,
@@ -927,7 +932,6 @@ class Emu3CoTDataset(Emu3SFTDataset):
                 return_tensors="pt",
             )
             append_segment(obs_prompt, supervise=False)
-
             # reason_text = reason_entry.get('reasoning', '').strip()
             reason_text = "To complete the task, we can get to the next state like this: "
             reason_prompt = self.tokenizer(
@@ -982,6 +986,9 @@ class Emu3CoTDataset(Emu3SFTDataset):
 
             if "labels" in sample:
                 sample["labels"] = self.pad_tensor(sample["labels"], self.tokenizer.model_max_length, self.args.ignore_index)
-        
+        # with open("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/cot_debug/debug_training_cot_vla_prompt.txt", "w") as f:
+        #     out = self.tokenizer.decode(sample["input_ids"], skip_special_tokens=False)
+        #     print(out, file=f)
+        #     exit(0)
         return sample
     

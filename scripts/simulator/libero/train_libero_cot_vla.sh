@@ -6,7 +6,7 @@ NGPUS=8
 
 DATAPATH='/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/meta/libero_all_norm.pkl'
 ACTION_TOKENIZER_PATH="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/pretrain/fast"
-EXP_NAME="UNIVLA_LIBERO_CoTVLA_BS192_8k_gripper=False_debug"
+EXP_NAME="UNIVLA_LIBERO_CoTVLA_BS192_16k_gripper=False_debug"
 global_batch_size=192
 per_gpu_batch_size=3
 grad_accumulation_steps=$((global_batch_size / NGPUS / per_gpu_batch_size))
@@ -32,7 +32,7 @@ torchrun \
     --bf16 True \
     --tf32 True \
     --data_path ${DATAPATH} \
-    --max_steps 8000 \
+    --max_steps 12000 \
     --dataloader_num_workers 12 \
     --lr_scheduler_type "cosine_with_min_lr" \
     --warmup_steps 50 \
@@ -46,10 +46,10 @@ torchrun \
     --actions True \
     --actions_format "fast" \
     --action_tokenizer_path ${ACTION_TOKENIZER_PATH} \
-    --use_gripper False \
     --per_device_train_batch_size ${per_gpu_batch_size} \
     --gradient_accumulation_steps ${grad_accumulation_steps} \
     --save_strategy steps \
     --save_steps 2000 \
     --eval_strategy no \
+    --use_gripper False \
     --with_cot True 
