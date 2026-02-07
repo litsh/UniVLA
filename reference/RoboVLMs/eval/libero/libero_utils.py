@@ -85,8 +85,8 @@ def get_libero_wrist_image(obs):
 
 
 def save_rollout_gif(img_list, path, fps=15):
-    print(len(img_list))
-    print(img_list[0].shape)
+    # print(len(img_list))
+    # print(img_list[0].shape)
     clip = ImageSequenceClip(img_list, fps=fps)
     clip.write_gif(path, fps=fps)
 

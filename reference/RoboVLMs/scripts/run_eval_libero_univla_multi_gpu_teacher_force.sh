@@ -1,13 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-# Remember to add --no_gripper to remove gripper images
 ckpt_dir="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/UNIVLA_LIBERO_CoTVLA_BS192_8k_gripper=False/checkpoint-8000"
-CACHE_ROOT="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/libero/UNIVLA_LIBERO_CoTVLA_BS192_8k_gripper=False/checkpoint-8000/spatial_debug"
-TASK_SUITE_NAME="libero_spatial"
-MASTER_PORT=29510
+CACHE_ROOT="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/libero/UNIVLA_LIBERO_CoTVLA_BS192_8k_gripper=False_teacher_forcing/checkpoint-8000/goal"
+TASK_SUITE_NAME="libero_goal"
+MASTER_PORT=29524
 GPUS_PER_NODE=8
-NUM_TRIALS_PER_TASK=20
+NUM_TRIALS_PER_TASK=50
+TEACHER_DATA_PATH="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/meta/libero_all_norm.pkl"
+TEACHER_MIN_H=5
+TEACHER_MAX_H=10
 
 
 
@@ -15,13 +17,13 @@ NUM_STEPS_WAIT=${NUM_STEPS_WAIT:-10}
 VISION_HUB=${VISION_HUB:-/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/huggingface/Emu3-VisionTokenizer}
 VQ_HUB=${VQ_HUB:-/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/huggingface/Emu3-Stage1}
 
-# export NCCL_P2P_DISABLE=1
-# export NCCL_IB_DISABLE=1  # If you don't have InfiniBand
+export NCCL_P2P_DISABLE=1
+export NCCL_IB_DISABLE=1  # If you don't have InfiniBand
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export __GL_VND_DISPATCH_LIBRARY_NAME=nvidia
 
-
+# export EMU_ATTENTION_IMPL=sdpa
 # export MUJOCO_GL=osmesa
 # export MJLIB_PATH=$HOME/.mujoco/mujoco200/bin/libmujoco200.so
 # export MJKEY_PATH=$HOME/.mujoco/mujoco200/mjkey.txt
@@ -40,7 +42,7 @@ torchrun \
   --nnodes=1 \
   --nproc_per_node="$GPUS_PER_NODE" \
   --master_port="$MASTER_PORT" \
-  eval/libero/evaluate_libero_emu_multi_gpu.py \
+  eval/libero/evaluate_libero_emu_multi_gpu_teacher_force.py \
   --task_suite_name "$TASK_SUITE_NAME" \
   --num_trials_per_task "$NUM_TRIALS_PER_TASK" \
   --num_steps_wait "$NUM_STEPS_WAIT" \
@@ -49,6 +51,8 @@ torchrun \
   --vision_hub "$VISION_HUB" \
   --vq_hub "$VQ_HUB" \
   --with_cot \
+  --teacher_data_path "$TEACHER_DATA_PATH" \
+  --teacher_min_h "$TEACHER_MIN_H" \
+  --teacher_max_h "$TEACHER_MAX_H" \
   --no_gripper \
-  --cot_max_new_tokens 1024 \
-  --debug
+  --cot_max_new_tokens 1024

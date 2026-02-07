@@ -1,5 +1,6 @@
 """
-Evaluate UniVLA / RoboVLMs-CoT via LIBERO with multi-GPU episode-level sharding.
+Evaluate UniVLA / RoboVLMs-CoT via LIBERO with multi-GPU episode-level sharding,
+using teacher-forced subgoal images from the training set.
 """
 import os
 import faulthandler
@@ -11,7 +12,8 @@ faulthandler.enable()
 import argparse
 import json
 import logging
-import re
+import pickle
+import random
 import sys
 import time
 import traceback
@@ -45,86 +47,60 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _decode_subgoal_images_from_text(model, thought_text):
-    if not thought_text:
-        return []
-
-    tokenizer = model.processor.tokenizer
-    boi = re.escape(tokenizer.boi_token)
-    eoi = re.escape(tokenizer.eoi_token)
-    img_token = re.escape(tokenizer.img_token)
-    visual_pattern = re.compile(model.processor.visual_template[1])
-
-    pattern = re.compile(
-        rf"{boi}(\d+)\*(\d+)\*(\d+){img_token}(.*?){eoi}",
-        re.DOTALL,
-    )
-    images = []
-    for match in pattern.finditer(thought_text):
-        frames = int(match.group(1))
-        height = int(match.group(2))
-        width = int(match.group(3))
-        content = match.group(4)
-        token_ids = [int(x) for x in visual_pattern.findall(content)]
-        if height <= 0 or width <= 0:
-            continue
-        expected = height * width * max(frames, 1)
-        if len(token_ids) < expected:
-            continue
-        token_ids = token_ids[:expected]
-        frame_tokens = [
-            token_ids[i * height * width:(i + 1) * height * width]
-            for i in range(max(frames, 1))
-        ]
-        for tokens in frame_tokens:
-            token_tensor = torch.tensor(
-                tokens,
-                dtype=torch.long,
-                device=model.processor.vision_tokenizer.device,
-            )
-            token_tensor = token_tensor.reshape(height, width)
-            decoded = model.processor.vision_decode(token_tensor[None]).float()
-            img = model.processor.image_processor.postprocess(decoded)["pixel_values"][0]
-            images.append(img)
-    return images
+def normalize_task_text(text: str) -> str:
+    text = " ".join(text.strip().split()).lower()
+    return text.rstrip(".")
 
 
-def save_subgoal_images(model, thought_text, out_dir, prefix):
-    try:
-        if not thought_text:
-            return 0, []
+def resolve_relative_path(path: str, roots: list[str]) -> str:
+    if os.path.isabs(path) and os.path.exists(path):
+        return path
+    for root in roots:
+        candidate = os.path.join(root, path)
+        if os.path.exists(candidate):
+            return candidate
+    return path
 
-        images = _decode_subgoal_images_from_text(model, thought_text)
-        if not images:
-            os.makedirs(out_dir, exist_ok=True)
-            text_path = os.path.join(out_dir, f"{prefix}.txt")
-            with open(text_path, "w") as f:
-                f.write(thought_text)
-            return 0, []
 
-        os.makedirs(out_dir, exist_ok=True)
-        saved = 0
-        gif_frames = []
-        for idx, image in enumerate(images):
-            img = np.asarray(image)
-            if img.dtype != np.uint8:
-                if img.max() <= 1.0:
-                    img = img * 255.0
-                img = np.clip(img, 0, 255).astype(np.uint8)
-            if img.ndim == 3 and img.shape[-1] == 3:
-                gif_frames.append(img)
-                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-            out_path = os.path.join(out_dir, f"{prefix}_{idx}.png")
-            if cv2.imwrite(out_path, img):
-                saved += 1
-        return saved, gif_frames
-    except Exception as exc:
-        traceback.print_exc()
-        os.makedirs(out_dir, exist_ok=True)
-        text_path = os.path.join(out_dir, f"{prefix}.txt")
-        with open(text_path, "w") as f:
-            f.write(thought_text)
-        return 0, []
+class TeacherForcingSampler:
+    def __init__(self, data_path: str, min_h: int, max_h: int, seed: int, search_roots: list[str]):
+        self.min_h = min_h
+        self.max_h = max_h
+        self.rng = random.Random(seed)
+        self.search_roots = search_roots
+        self.scene_index = {}
+        self.current_scene = None
+
+        with open(data_path, "rb") as f:
+            data = pickle.load(f)
+        for scene in data:
+            key = normalize_task_text(scene["text"])
+            self.scene_index.setdefault(key, []).append(scene)
+
+        if not self.scene_index:
+            raise ValueError(f"No scenes loaded from {data_path}")
+
+    def reset_episode(self, task_description: str):
+        key = normalize_task_text(task_description)
+        scenes = self.scene_index.get(key)
+        if not scenes:
+            raise KeyError(f"Task description not found in training set: {task_description}")
+        self.current_scene = self.rng.choice(scenes)
+
+    def get_goal_tokens(self, step_idx: int):
+        if self.current_scene is None:
+            raise RuntimeError("TeacherForcingSampler.reset_episode must be called before get_goal_tokens.")
+        u = self.rng.randint(self.min_h, self.max_h)
+        image_paths = self.current_scene["image"]
+        if not image_paths:
+            raise ValueError("Current scene has no image paths.")
+        goal_idx = min(max(step_idx + u, 0), len(image_paths) - 1)
+        path = resolve_relative_path(image_paths[goal_idx], self.search_roots)
+        goal_tokens = np.load(path)
+        if goal_tokens.ndim == 2:
+            goal_tokens = goal_tokens[None, ...]
+        return goal_tokens, goal_idx, u
+
 
 def world_info_from_env():
     local_rank = 0
@@ -216,6 +192,7 @@ def evaluate(
     render_gpu_device_id,
     num_trials_per_task,
     num_steps_wait,
+    teacher_sampler=None,
     debug=False,
 ):
     os.makedirs(local_log_dir, exist_ok=True)
@@ -281,13 +258,13 @@ def evaluate(
             obs = env.set_init_state(initial_states[episode_idx])
             t = 0
             replay_images = []
-            subgoal_gif_frames = []
-            post_action_images = []
             done = False
             error = None
 
             if model.use_cot:
                 thought = [""]
+            if teacher_sampler is not None:
+                teacher_sampler.reset_episode(task_description)
 
             logger.info("Starting episode %s (task %s)", episode_idx + 1, task_id)
             log_file.write(
@@ -307,25 +284,33 @@ def evaluate(
                     
                     observation, img = prepare_observation(obs)
                     if debug:
+                        if model.use_cot:
+                            text_img = np.ones((img.shape[0], 1000, 3), dtype=np.uint8) * 255
+                            lines = thought[0].replace("@", "\n").split("\n")
+                            for i, line in enumerate(lines):
+                                cv2.putText(
+                                    text_img,
+                                    line,
+                                    (10, 30 + i * 20),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.5,
+                                    (0, 0, 0),
+                                    1,
+                                )
+                            img = np.concatenate((img, text_img), axis=1)
                         replay_images.append(img)
 
                     if action_counter == 0:
                         if model.use_cot:
-                            action, thought = model.step(observation, task_description)
-                            if debug:
-                                subgoal_dir = os.path.join(
-                                    local_log_dir,
-                                    "subgoals",
-                                    f"task{task_id}/episode{episode_idx + 1}",
+                            goal_tokens = None
+                            if teacher_sampler is not None:
+                                step_idx = max(t - num_steps_wait, 0)
+                                goal_tokens, goal_idx, u = teacher_sampler.get_goal_tokens(step_idx)
+                                log_file.write(
+                                    f"Teacher goal idx: {goal_idx} (step {step_idx} + {u})\n"
                                 )
-                                _, gif_frames = save_subgoal_images(
-                                    model,
-                                    thought[0],
-                                    subgoal_dir,
-                                    prefix=f"step{t}",
-                                )
-                                if gif_frames:
-                                    subgoal_gif_frames.extend(gif_frames)
+                                log_file.flush()
+                            action, thought = model.step(observation, task_description, goal_tokens=goal_tokens)
                         else:
                             action = model.step(observation, task_description)
                         action_counter = action.shape[0]
@@ -333,8 +318,6 @@ def evaluate(
                     step_action = action[-action_counter]
                     obs, reward, done, info = env.step(step_action.tolist())
                     action_counter -= 1
-                    if debug and model.use_cot and action_counter == 0:
-                        post_action_images.append(get_libero_image(obs))
                     if done:
                         task_successes += 1
                         total_successes += 1
@@ -354,23 +337,9 @@ def evaluate(
                 gif_dir = os.path.join(local_log_dir, "videos")
                 os.makedirs(gif_dir, exist_ok=True)
                 gif_path = os.path.join(
-                    gif_dir, f"task{task_id}_episode{episode_idx + 1}_{done}.gif"
+                    gif_dir, f"task{task_id}_episode{episode_idx + 1}.gif"
                 )
                 save_rollout_gif(replay_images, gif_path, fps=15)
-            if debug and subgoal_gif_frames:
-                subgoal_gif_dir = os.path.join(local_log_dir, "subgoals")
-                os.makedirs(subgoal_gif_dir, exist_ok=True)
-                subgoal_gif_path = os.path.join(
-                    subgoal_gif_dir, f"task{task_id}_episode{episode_idx + 1}_{done}.gif"
-                )
-                save_rollout_gif(subgoal_gif_frames, subgoal_gif_path, fps=15)
-            if debug and model.use_cot and post_action_images:
-                real_state_dir = os.path.join(local_log_dir, "real_states")
-                os.makedirs(real_state_dir, exist_ok=True)
-                real_state_path = os.path.join(
-                    real_state_dir, f"task{task_id}_episode{episode_idx + 1}_{done}.gif"
-                )
-                save_rollout_gif(post_action_images, real_state_path, fps=15)
 
             _, global_episode_idx = episode_is_assigned(
                 task_id, episode_idx, num_trials_per_task, rank, world_size
@@ -426,7 +395,7 @@ def evaluate(
 def parse_args():
     seed_everything(0, workers=True)  # type: ignore
     parser = argparse.ArgumentParser(
-        description="Evaluate UniVLA on LIBERO with multi-GPU episode-level sharding."
+        description="Evaluate UniVLA on LIBERO with teacher-forced subgoal images."
     )
     parser.add_argument("--debug", action="store_true", help="Save rollout GIFs.")
     parser.add_argument("--config_path", type=str, default=None)
@@ -477,6 +446,24 @@ def parse_args():
         help="Enable CoT-style evaluation (subgoal reasoning).",
     )
     parser.add_argument(
+        "--teacher_data_path",
+        type=str,
+        default="data_storage/meta/libero_all_norm.pkl",
+        help="Training pickle used to sample teacher-forced subgoal images.",
+    )
+    parser.add_argument(
+        "--teacher_min_h",
+        type=int,
+        default=5,
+        help="Min horizon u for teacher-forced goal index (t + u).",
+    )
+    parser.add_argument(
+        "--teacher_max_h",
+        type=int,
+        default=10,
+        help="Max horizon u for teacher-forced goal index (t + u).",
+    )
+    parser.add_argument(
         "--no_gripper",
         action="store_true",
         help="Not to use gripper image"
@@ -517,6 +504,8 @@ def get_run_id(args):
 def main():
     args = parse_args()
     seed_everything(args.seed, workers=True)  # type: ignore
+    if not args.with_cot:
+        raise ValueError("Teacher-forced evaluation requires --with_cot.")
 
     local_rank, rank, world_size = world_info_from_env()
 
@@ -543,12 +532,44 @@ def main():
                     "task_suite_name": args.task_suite_name,
                     "num_trials_per_task": args.num_trials_per_task,
                     "world_size": world_size,
+                    "teacher_data_path": args.teacher_data_path,
+                    "teacher_min_h": args.teacher_min_h,
+                    "teacher_max_h": args.teacher_max_h,
                     "results_pattern": "episodes_rank{rank}.jsonl",
                     "log_pattern": "eval_rank{rank}.txt",
                 },
                 f,
                 indent=2,
             )
+
+    if args.teacher_min_h > args.teacher_max_h:
+        raise ValueError(
+            f"teacher_min_h ({args.teacher_min_h}) must be <= teacher_max_h ({args.teacher_max_h})"
+        )
+
+    repo_root = Path(__file__).resolve().parents[4]
+    teacher_data_path = args.teacher_data_path
+    if not os.path.isabs(teacher_data_path):
+        candidate = repo_root / teacher_data_path
+        if candidate.exists():
+            teacher_data_path = str(candidate)
+    if args.with_cot and not os.path.exists(teacher_data_path):
+        raise FileNotFoundError(f"Teacher data path not found: {teacher_data_path}")
+
+    search_roots = [
+        str(Path.cwd()),
+        str(repo_root),
+        str(Path(teacher_data_path).resolve().parent),
+    ]
+    teacher_sampler = None
+    if args.with_cot:
+        teacher_sampler = TeacherForcingSampler(
+            data_path=teacher_data_path,
+            min_h=args.teacher_min_h,
+            max_h=args.teacher_max_h,
+            seed=args.seed + rank,
+            search_roots=search_roots,
+        )
 
     model = EmuVLAModel(
         emu_hub=args.emu_hub,
@@ -569,6 +590,7 @@ def main():
         render_gpu_device_id=render_gpu_device_id,
         num_trials_per_task=args.num_trials_per_task,
         num_steps_wait=args.num_steps_wait,
+        teacher_sampler=teacher_sampler,
         debug=args.debug,
     )
 

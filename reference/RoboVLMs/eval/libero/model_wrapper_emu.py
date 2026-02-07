@@ -189,7 +189,43 @@ class EmuVLAModel:
             gripper_code,
         )
 
-    def step(self, image, goal):
+    def _normalize_goal_tokens(self, goal_tokens):
+        if isinstance(goal_tokens, np.ndarray):
+            tokens = torch.from_numpy(goal_tokens)
+        elif torch.is_tensor(goal_tokens):
+            tokens = goal_tokens.detach().cpu()
+        else:
+            raise TypeError(f"Unsupported goal_tokens type: {type(goal_tokens)}")
+        if tokens.ndim == 2:
+            tokens = tokens.unsqueeze(0)
+        if tokens.ndim != 3:
+            raise ValueError(f"Expected goal_tokens with 3 dims [T,H,W], got shape {tokens.shape}")
+        return tokens
+
+    def _append_teacher_goal_tokens(self, context_input_ids, context_attention_mask, goal_tokens):
+        goal_tokens = self._normalize_goal_tokens(goal_tokens)
+        goal_prompt = self.processor.format_video_prompt(goal_tokens)
+        goal_inputs = self.tokenizer(
+            goal_prompt,
+            padding=False,
+            return_token_type_ids=False,
+            return_tensors="pt",
+        )
+        goal_input_ids = goal_inputs["input_ids"].to(self.device)
+        goal_attention_mask = goal_inputs["attention_mask"].to(self.device)
+        context_input_ids = torch.cat([context_input_ids, goal_input_ids], dim=1)
+        context_attention_mask = torch.cat([context_attention_mask, goal_attention_mask], dim=1)
+        eot_tensor = torch.full(
+            (context_input_ids.size(0), 1),
+            self.eot_token_id,
+            dtype=context_input_ids.dtype,
+            device=context_input_ids.device,
+        )
+        context_input_ids = torch.cat([context_input_ids, eot_tensor], dim=1)
+        context_attention_mask = torch.cat([context_attention_mask, torch.ones_like(eot_tensor)], dim=1)
+        return context_input_ids, context_attention_mask
+
+    def step(self, image, goal, goal_tokens=None):
         input_dict = dict()
         
         image_code, gripper_code = self.preprocess(image)
@@ -275,16 +311,23 @@ class EmuVLAModel:
         thought_text = ""
 
         if self.use_cot:
-            with torch.no_grad():
-                cot_outputs = self.model.generate(
-                    context_input_ids,
-                    self.COT_CONFIG,
-                    max_new_tokens=self.cot_max_new_tokens,
-                    attention_mask=context_attention_mask,
+            if goal_tokens is None:
+                with torch.no_grad():
+                    cot_outputs = self.model.generate(
+                        context_input_ids,
+                        self.COT_CONFIG,
+                        max_new_tokens=self.cot_max_new_tokens,
+                        attention_mask=context_attention_mask,
+                    )
+                cot_tokens = cot_outputs[:, context_length:]
+                thought_text = self.tokenizer.decode(cot_tokens[0], skip_special_tokens=False)
+                context_input_ids = cot_outputs
+                context_attention_mask = torch.ones_like(context_input_ids)
+            else:
+                context_input_ids, context_attention_mask = self._append_teacher_goal_tokens(
+                    context_input_ids, context_attention_mask, goal_tokens
                 )
-            cot_tokens = cot_outputs[:, context_length:]
-            thought_text = self.tokenizer.decode(cot_tokens[0], skip_special_tokens=False)
-            context_input_ids = cot_outputs
+                thought_text = "teacher_forced_goal"
             boa_tensor = torch.full(
                 (context_input_ids.size(0), 1),
                 self.boa_token_id,
@@ -310,7 +353,7 @@ class EmuVLAModel:
                 )
             # omit the eoa token
             orig_outputs = outputs[:, context_length:]
-            # with open("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/cot_debug/debug_output.txt", "w") as f:
+            # with open("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/cot_debug/debug_output_no_prefix.txt", "w") as f:
             #     out = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
             #     print(f"use_gripper: {self.use_gripper}")
             #     print(out, file=f)
