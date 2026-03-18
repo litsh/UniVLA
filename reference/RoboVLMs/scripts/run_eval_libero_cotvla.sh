@@ -5,25 +5,25 @@ export ARNOLD_ID=0
 export RANK=0
 export OMP_NUM_THREADS=16
 
-# export MUJOCO_GL=osmesa
-# export MJLIB_PATH=$HOME/.mujoco/mujoco200/bin/libmujoco200.so
-# export MJKEY_PATH=$HOME/.mujoco/mujoco200/mjkey.txt
-# export LD_LIBRARY_PATH=$HOME/.mujoco/mujoco200/bin:$LD_LIBRARY_PATH
-# export MUJOCO_PY_MJPRO_PATH=$HOME/.mujoco/mujoco200/
-# export MUJOCO_PY_MJKEY_PATH=$HOME/.mujoco/mujoco200/mjkey.txt
-# export NUMBA_DISABLE_JIT=1
-# unset LD_LIBRARY_PATH
+export MUJOCO_GL=osmesa
+export MJLIB_PATH=$HOME/.mujoco/mujoco200/bin/libmujoco200.so
+export MJKEY_PATH=$HOME/.mujoco/mujoco200/mjkey.txt
+export LD_LIBRARY_PATH=$HOME/.mujoco/mujoco200/bin:$LD_LIBRARY_PATH
+export MUJOCO_PY_MJPRO_PATH=$HOME/.mujoco/mujoco200/
+export MUJOCO_PY_MJKEY_PATH=$HOME/.mujoco/mujoco200/mjkey.txt
+export NUMBA_DISABLE_JIT=1
+unset LD_LIBRARY_PATH
 
 echo "total workers: ${ARNOLD_WORKER_NUM}"
 echo "cur worker id: ${ARNOLD_ID}"
 echo "gpus per worker: ${ARNOLD_WORKER_GPU}"
 
-# 1. Direct MuJoCo to use EGL
-export MUJOCO_GL="egl"
-# 2. Direct PyOpenGL to use EGL
-export PYOPENGL_PLATFORM="egl"
-# 3. (Optional) Force NVIDIA to be the vendor for GLVND
-export __GL_VND_DISPATCH_LIBRARY_NAME=nvidia
+# # 1. Direct MuJoCo to use EGL
+# export MUJOCO_GL="egl"
+# # 2. Direct PyOpenGL to use EGL
+# export PYOPENGL_PLATFORM="egl"
+# # 3. (Optional) Force NVIDIA to be the vendor for GLVND
+# export __GL_VND_DISPATCH_LIBRARY_NAME=nvidia
 
 export CUDA_VISIBLE_DEVICES=0
 suite_name='libero_goal'

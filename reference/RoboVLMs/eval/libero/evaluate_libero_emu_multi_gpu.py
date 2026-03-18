@@ -17,7 +17,6 @@ import time
 import traceback
 from pathlib import Path
 import tqdm
-import cv2
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -27,6 +26,7 @@ sys.path.insert(0, Path(__file__).absolute().parents[2].as_posix())
 
 from model_wrapper_emu import EmuVLAModel
 from libero_utils import (
+    get_libero_camera_image,
     get_episode_length,
     get_libero_dummy_action,
     get_libero_env,
@@ -103,9 +103,8 @@ def save_subgoal_images(model, thought_text, out_dir, prefix):
             return 0, []
 
         os.makedirs(out_dir, exist_ok=True)
-        saved = 0
         gif_frames = []
-        for idx, image in enumerate(images):
+        for image in images:
             img = np.asarray(image)
             if img.dtype != np.uint8:
                 if img.max() <= 1.0:
@@ -113,11 +112,7 @@ def save_subgoal_images(model, thought_text, out_dir, prefix):
                 img = np.clip(img, 0, 255).astype(np.uint8)
             if img.ndim == 3 and img.shape[-1] == 3:
                 gif_frames.append(img)
-                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-            out_path = os.path.join(out_dir, f"{prefix}_{idx}.png")
-            if cv2.imwrite(out_path, img):
-                saved += 1
-        return saved, gif_frames
+        return 0, gif_frames
     except Exception as exc:
         traceback.print_exc()
         os.makedirs(out_dir, exist_ok=True)
@@ -187,10 +182,8 @@ def setup_distributed():
 
 def prepare_observation(obs):
     img = get_libero_image(obs)
-    wrist_img = get_libero_wrist_image(obs)
     observation = {
         "full_image": img,
-        "wrist_image": wrist_img,
         "state": np.concatenate(
             (
                 obs["robot0_eef_pos"],
@@ -199,7 +192,15 @@ def prepare_observation(obs):
             )
         ),
     }
+    if "robot0_eye_in_hand_image" in obs:
+        observation["wrist_image"] = get_libero_wrist_image(obs)
     return observation, img
+
+
+def obs_key_to_camera_name(obs_key):
+    if not obs_key.endswith("_image"):
+        raise ValueError(f"Unexpected observation key format: {obs_key}")
+    return obs_key[: -len("_image")]
 
 
 def episode_is_assigned(task_id, episode_idx, num_trials_per_task, rank, world_size):
@@ -217,6 +218,9 @@ def evaluate(
     num_trials_per_task,
     num_steps_wait,
     debug=False,
+    perspective_eval=False,
+    perspective_obs_key="robot0_eye_in_hand_image",
+    camera_resolution=256,
 ):
     os.makedirs(local_log_dir, exist_ok=True)
     log_path = os.path.join(local_log_dir, f"eval_rank{rank}.txt")
@@ -261,8 +265,19 @@ def evaluate(
                 f"but num_trials_per_task={num_trials_per_task}"
             )
 
+        camera_names = ["agentview"]
+        if getattr(model, "use_gripper", False):
+            camera_names.append("robot0_eye_in_hand")
+        if perspective_eval:
+            target_camera = obs_key_to_camera_name(perspective_obs_key)
+            if target_camera not in camera_names:
+                camera_names.append(target_camera)
+
         env, task_description = get_libero_env(
-            task, resolution=256, render_gpu_device_id=render_gpu_device_id
+            task,
+            resolution=camera_resolution,
+            render_gpu_device_id=render_gpu_device_id,
+            camera_names=camera_names,
         )
         task_episodes = 0
         task_successes = 0
@@ -313,15 +328,15 @@ def evaluate(
                         if model.use_cot:
                             action, thought = model.step(observation, task_description)
                             if debug:
-                                subgoal_dir = os.path.join(
+                                pred_dir = os.path.join(
                                     local_log_dir,
-                                    "subgoals",
+                                    "pred_perspective_images" if perspective_eval else "pred_images",
                                     f"task{task_id}/episode{episode_idx + 1}",
                                 )
                                 _, gif_frames = save_subgoal_images(
                                     model,
                                     thought[0],
-                                    subgoal_dir,
+                                    pred_dir,
                                     prefix=f"step{t}",
                                 )
                                 if gif_frames:
@@ -334,7 +349,12 @@ def evaluate(
                     obs, reward, done, info = env.step(step_action.tolist())
                     action_counter -= 1
                     if debug and model.use_cot and action_counter == 0:
-                        post_action_images.append(get_libero_image(obs))
+                        if perspective_eval:
+                            post_action_images.append(
+                                get_libero_camera_image(obs, perspective_obs_key)
+                            )
+                        else:
+                            post_action_images.append(get_libero_image(obs))
                     if done:
                         task_successes += 1
                         total_successes += 1
@@ -358,14 +378,20 @@ def evaluate(
                 )
                 save_rollout_gif(replay_images, gif_path, fps=15)
             if debug and subgoal_gif_frames:
-                subgoal_gif_dir = os.path.join(local_log_dir, "subgoals")
+                subgoal_gif_dir = os.path.join(
+                    local_log_dir,
+                    "pred_perspective_images" if perspective_eval else "pred_images",
+                )
                 os.makedirs(subgoal_gif_dir, exist_ok=True)
                 subgoal_gif_path = os.path.join(
                     subgoal_gif_dir, f"task{task_id}_episode{episode_idx + 1}_{done}.gif"
                 )
                 save_rollout_gif(subgoal_gif_frames, subgoal_gif_path, fps=15)
             if debug and model.use_cot and post_action_images:
-                real_state_dir = os.path.join(local_log_dir, "real_states")
+                real_state_dir = os.path.join(
+                    local_log_dir,
+                    "real_states_perspective" if perspective_eval else "real_states",
+                )
                 os.makedirs(real_state_dir, exist_ok=True)
                 real_state_path = os.path.join(
                     real_state_dir, f"task{task_id}_episode{episode_idx + 1}_{done}.gif"
@@ -429,6 +455,20 @@ def parse_args():
         description="Evaluate UniVLA on LIBERO with multi-GPU episode-level sharding."
     )
     parser.add_argument("--debug", action="store_true", help="Save rollout GIFs.")
+    parser.add_argument(
+        "--perspective_eval",
+        action="store_true",
+        help="Save predicted images and real states from a selected perspective view.",
+    )
+    parser.add_argument(
+        "--perspective_obs_key",
+        type=str,
+        default="robot0_eye_in_hand_image",
+        help=(
+            "Observation key used as the real target view during perspective evaluation, "
+            "e.g. robot0_eye_in_hand_image, birdview_image, sideview_image."
+        ),
+    )
     parser.add_argument("--config_path", type=str, default=None)
     parser.add_argument("--is_pt_config", action="store_true")
     parser.add_argument("--ckpt_dir", type=str, nargs="+", default="")
@@ -492,6 +532,12 @@ def parse_args():
     )
     parser.add_argument(
         "--num_steps_wait", type=int, default=10, help="Initial wait steps."
+    )
+    parser.add_argument(
+        "--camera_resolution",
+        type=int,
+        default=256,
+        help="LIBERO offscreen render resolution per camera.",
     )
     parser.add_argument(
         "--run_id",
@@ -570,6 +616,9 @@ def main():
         num_trials_per_task=args.num_trials_per_task,
         num_steps_wait=args.num_steps_wait,
         debug=args.debug,
+        perspective_eval=args.perspective_eval,
+        perspective_obs_key=args.perspective_obs_key,
+        camera_resolution=args.camera_resolution,
     )
 
     if dist.is_available() and dist.is_initialized():

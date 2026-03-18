@@ -991,4 +991,175 @@ class Emu3CoTDataset(Emu3SFTDataset):
         #     print(out, file=f)
         #     exit(0)
         return sample
+
+class Emu3PerspectiveDataset(Emu3SFTDataset):
+
+    def __init__(self, args: "DataArguments", tokenizer):
+        super().__init__(args, tokenizer=tokenizer)
+        self.perspective_image_key = getattr(args, "perspective_image_key", "gripper_image")
+
+    def load_token_clip(self, paths):
+        frames = [torch.from_numpy(np.load(path)) for path in paths]
+        if not frames:
+            print(paths)
+            raise ValueError("No token paths provided for clip loading.")
+        tensor = torch.stack(frames, dim=1)
+        return tensor.squeeze(0)
+
+    def __getitem__(self, index: int):
+        scene = self.data[index]
+        prompt = scene["text"]
+        image_tokens_path = scene["image"]
+        if self.perspective_image_key not in scene:
+            available_views = sorted(
+                key for key, value in scene.items()
+                if key.endswith("_image") and key != "image" and isinstance(value, list)
+            )
+            raise KeyError(
+                f"Perspective view '{self.perspective_image_key}' not found in sample. "
+                f"Available views: {available_views}"
+            )
+        other_view_paths = scene[self.perspective_image_key]
+        action = scene["action"]
+
+        if self.T > 1 and self.video_format == "interleave":
+            raise NotImplementedError("Perspective dataset does not support interleave video format yet.")
+
+        available_frames = min(len(image_tokens_path), len(other_view_paths), len(action))
+        if available_frames <= 0:
+            raise ValueError(
+                f"No aligned frames available for perspective training. "
+                f"image={len(image_tokens_path)}, {self.perspective_image_key}={len(other_view_paths)}, action={len(action)}"
+            )
+        frames_num = self.action_frames if available_frames >= self.action_frames else available_frames
+
+        if self.random_frame_sampling:
+            max_start = max(available_frames - frames_num, 0)
+            start_idx = random.randint(0, max_start)
+        else:
+            start_idx = 0
+        end_idx = start_idx + frames_num
+
+        selected_image_paths = image_tokens_path[start_idx:end_idx]
+        selected_other_paths = other_view_paths[start_idx:end_idx]
+
+        image_tokens = self.load_token_clip(selected_image_paths)
+        other_view_tokens = self.load_token_clip(selected_other_paths)
+
+        action_tokens = action[start_idx:end_idx]
+
+        if self.actions_format == "openvla":
+            action_tokens = action_tokens.flatten()
+            action_ids = self.action_tokenizer(action_tokens)
+        elif self.actions_format == "text":
+            action_str = "\n".join(",".join(f"{num:.2f}" for num in row) for row in action_tokens)
+            action_prompt = self.act_template.format(action_prompt=action_str)
+        elif self.actions_format == "continuous":
+            action_continuous = action_tokens
+        elif self.actions_format == "fast":
+            if isinstance(action_tokens, list):
+                tensor_list = [torch.tensor(item).unsqueeze(0) for item in action_tokens]
+                action_tokens = torch.cat(tensor_list, dim=0)
+            action_ids = self.action_tokenizer(action_tokens)[0]
+            self.last_vocab_idx = self.tokenizer.pad_token_id - 1
+            action_ids = [self.last_vocab_idx - id for id in action_ids]
+        else:
+            raise ValueError(f"Invalid actions_format: {self.actions_format}")
+
+        image_tokens = image_tokens[0:self.T, ...]
+        image_prompt = self.format_video_prompt(image_tokens)
+
+        prompt = (
+            f"Given the image of the current state, what actions should the robot take to {prompt}? "
+            "Output the low-level action(s) to take."
+        )
+        text_prompt = self.tokenizer(
+            self.tokenizer.bos_token + prompt,
+            padding=False,
+            return_token_type_ids=False,
+            return_tensors="pt",
+        )
+        sample_input_ids = text_prompt["input_ids"][0]
+        sample_attention_mask = text_prompt["attention_mask"][0]
+        labels = torch.full_like(sample_input_ids, self.args.ignore_index)
+
+        def append_segment(segment, supervise=True):
+            nonlocal sample_input_ids, sample_attention_mask, labels
+            seg_ids = segment["input_ids"][0]
+            seg_mask = segment["attention_mask"][0]
+            sample_input_ids = torch.cat([sample_input_ids, seg_ids], dim=-1)
+            sample_attention_mask = torch.cat([sample_attention_mask, seg_mask], dim=-1)
+            if supervise:
+                seg_labels = seg_ids.clone()
+            else:
+                seg_labels = torch.full_like(seg_ids, self.args.ignore_index)
+            labels = torch.cat([labels, seg_labels], dim=-1)
+
+        obs_prompt = self.tokenizer(
+            image_prompt,
+            padding=False,
+            return_token_type_ids=False,
+            return_tensors="pt",
+        )
+        append_segment(obs_prompt, supervise=False)
+
+        # dperspective_text = "From another perspective, the eye-in-hand view looks like: "
+        perspective_text = ""
+        perspective_prompt = self.tokenizer(
+            self.tokenizer.bot_token + perspective_text,
+            padding=False,
+            return_token_type_ids=False,
+            return_tensors="pt",
+        )
+        append_segment(perspective_prompt, supervise=True)
+
+        other_view_tokens = other_view_tokens[0:self.T, ...]
+        other_view_prompt = self.tokenizer(
+            self.format_video_prompt(other_view_tokens),
+            padding=False,
+            return_token_type_ids=False,
+            return_tensors="pt",
+        )
+        append_segment(other_view_prompt, supervise=True)
+
+        end_prompt = self.tokenizer(
+            self.tokenizer.eot_token,
+            padding=False,
+            return_token_type_ids=False,
+            return_tensors="pt",
+        )
+        append_segment(end_prompt, supervise=True)
+
+        sample = {
+            "input_ids": sample_input_ids,
+            "attention_mask": sample_attention_mask,
+            "labels": labels,
+        }
+
+        if self.actions:
+            if self.args.apply_loss_on_only_action and not getattr(self.args, "with_perspective", False):
+                sample["labels"] = torch.full_like(sample["labels"], self.args.ignore_index)
+            if self.actions_format == "continuous":
+                boa_token_id = self.tokenizer.encode(self.tokenizer.boa_token)[0]
+                sample = self.append_boa_to_sample(sample, [boa_token_id])
+                sample["action"] = action_continuous
+            else:
+                sample = self.append_action_to_sample(sample, action_ids)
+
+        sample = self.tokenizer.pad(
+            sample,
+            padding="max_length",
+            return_tensors="pt",
+        )
+
+        for k, v in sample.items():
+            sample[k] = v.squeeze(0)
+
+        if "labels" in sample:
+            sample["labels"] = self.pad_tensor(sample["labels"], self.tokenizer.model_max_length, self.args.ignore_index)
+        # with open("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/cot_debug/debug_training_perspective_vla_prompt.txt", "w") as f:
+        #     out = self.tokenizer.decode(sample["input_ids"], skip_special_tokens=False)
+        #     print(out, file=f)
+        #     exit(0)
+        return sample
     

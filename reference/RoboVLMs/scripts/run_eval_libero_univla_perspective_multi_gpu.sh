@@ -1,26 +1,23 @@
 #!/bin/bash
-set -euo pipefail
+# set -euo pipefai
 
-# Remember to add --no_gripper to remove gripper images
-ckpt_dir="/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/logs/UNIVLA_LIBERO_IMG_BS192_8k_reproduced"
-CACHE_ROOT="/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/logs/libero/UNIVLA_LIBERO_IMG_BS192_8k_reproduced/checkpoint-8000/object_debug"
-TASK_SUITE_NAME="libero_object"
-MASTER_PORT=29524
+# Perspective-VLA evaluation (predict eye-in-hand view then actions)
+ckpt_dir="/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/logs/UNIVLA_LIBERO_PERSPECTIVE_birdview_BS192_10k/checkpoint-2000"
+CACHE_ROOT="/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/logs/libero/UNIVLA_LIBERO_PERSPECTIVE_birdview_BS192_10k/checkpoint-2000/debug/goal_occluded"
+TASK_SUITE_NAME="libero_goal_occluded"
+PERSPECTIVE_OBS_KEY="birdview_image"
+MASTER_PORT=29569
 GPUS_PER_NODE=4
 NUM_TRIALS_PER_TASK=10
-
-
+CAMERA_RESOLUTION=${CAMERA_RESOLUTION:-200}
 
 NUM_STEPS_WAIT=${NUM_STEPS_WAIT:-10}
 VISION_HUB=${VISION_HUB:-/inspire/hdd/global_user/chenfangke-253108540237/tsli/huggingface/Emu3-VisionTokenizer}
 VQ_HUB=${VQ_HUB:-/inspire/hdd/global_user/chenfangke-253108540237/tsli/huggingface/Emu3-Stage1}
 
-# export NCCL_P2P_DISABLE=1
-# export NCCL_IB_DISABLE=1  # If you don't have InfiniBand
 # export MUJOCO_GL=egl
 # export PYOPENGL_PLATFORM=egl
 # export __GL_VND_DISPATCH_LIBRARY_NAME=nvidia
-
 
 export MUJOCO_GL=osmesa
 export MJLIB_PATH=$HOME/.mujoco/mujoco200/bin/libmujoco200.so
@@ -47,10 +44,17 @@ torchrun \
   --emu_hub "$ckpt_dir" \
   --cache_root "$CACHE_ROOT" \
   --vision_hub "$VISION_HUB" \
-  --vq_hub "$VQ_HUB" 
+  --vq_hub "$VQ_HUB" \
+  --with_cot \
+  --cot_max_new_tokens 1024 \
+  --no_gripper \
+  --perspective_obs_key "$PERSPECTIVE_OBS_KEY" \
+  --camera_resolution "$CAMERA_RESOLUTION" \
+  --perspective_eval \
+  --debug
   
-  # --with_cot \
-  # --cot_max_new_tokens 1024 \
   
-  #  --debug
-  #  --no_gripper \
+  # --perspective_eval \
+  # --debug
+  
+#  --debug

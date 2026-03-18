@@ -29,6 +29,7 @@ sys.path.insert(0, Path(__file__).absolute().parents[2].as_posix())
 
 from model_wrapper_emu import EmuVLAModel
 from libero_utils import (
+    get_libero_camera_image,
     get_episode_length,
     get_libero_dummy_action,
     get_libero_env,
@@ -63,11 +64,20 @@ def resolve_relative_path(path: str, roots: list[str]) -> str:
 
 
 class TeacherForcingSampler:
-    def __init__(self, data_path: str, min_h: int, max_h: int, seed: int, search_roots: list[str]):
+    def __init__(
+        self,
+        data_path: str,
+        min_h: int,
+        max_h: int,
+        seed: int,
+        search_roots: list[str],
+        image_key: str = "image",
+    ):
         self.min_h = min_h
         self.max_h = max_h
         self.rng = random.Random(seed)
         self.search_roots = search_roots
+        self.image_key = image_key
         self.scene_index = {}
         self.current_scene = None
 
@@ -91,9 +101,9 @@ class TeacherForcingSampler:
         if self.current_scene is None:
             raise RuntimeError("TeacherForcingSampler.reset_episode must be called before get_goal_tokens.")
         u = self.rng.randint(self.min_h, self.max_h)
-        image_paths = self.current_scene["image"]
+        image_paths = self.current_scene[self.image_key]
         if not image_paths:
-            raise ValueError("Current scene has no image paths.")
+            raise ValueError(f"Current scene has no image paths for key '{self.image_key}'.")
         goal_idx = min(max(step_idx + u, 0), len(image_paths) - 1)
         path = resolve_relative_path(image_paths[goal_idx], self.search_roots)
         goal_tokens = np.load(path)
@@ -163,10 +173,8 @@ def setup_distributed():
 
 def prepare_observation(obs):
     img = get_libero_image(obs)
-    wrist_img = get_libero_wrist_image(obs)
     observation = {
         "full_image": img,
-        "wrist_image": wrist_img,
         "state": np.concatenate(
             (
                 obs["robot0_eef_pos"],
@@ -175,7 +183,15 @@ def prepare_observation(obs):
             )
         ),
     }
+    if "robot0_eye_in_hand_image" in obs:
+        observation["wrist_image"] = get_libero_wrist_image(obs)
     return observation, img
+
+
+def obs_key_to_camera_name(obs_key):
+    if not obs_key.endswith("_image"):
+        raise ValueError(f"Unexpected observation key format: {obs_key}")
+    return obs_key[: -len("_image")]
 
 
 def episode_is_assigned(task_id, episode_idx, num_trials_per_task, rank, world_size):
@@ -194,6 +210,9 @@ def evaluate(
     num_steps_wait,
     teacher_sampler=None,
     debug=False,
+    teacher_force_mode="cot",
+    perspective_obs_key="robot0_eye_in_hand_image",
+    camera_resolution=256,
 ):
     os.makedirs(local_log_dir, exist_ok=True)
     log_path = os.path.join(local_log_dir, f"eval_rank{rank}.txt")
@@ -238,8 +257,19 @@ def evaluate(
                 f"but num_trials_per_task={num_trials_per_task}"
             )
 
+        camera_names = ["agentview"]
+        if getattr(model, "use_gripper", False):
+            camera_names.append("robot0_eye_in_hand")
+        if teacher_force_mode == "perspective":
+            target_camera = obs_key_to_camera_name(perspective_obs_key)
+            if target_camera not in camera_names:
+                camera_names.append(target_camera)
+
         env, task_description = get_libero_env(
-            task, resolution=256, render_gpu_device_id=render_gpu_device_id
+            task,
+            resolution=camera_resolution,
+            render_gpu_device_id=render_gpu_device_id,
+            camera_names=camera_names,
         )
         task_episodes = 0
         task_successes = 0
@@ -311,6 +341,12 @@ def evaluate(
                                 )
                                 log_file.flush()
                             action, thought = model.step(observation, task_description, goal_tokens=goal_tokens)
+                        elif teacher_force_mode == "perspective":
+                            action = model.step(
+                                observation,
+                                task_description,
+                                perspective_image=get_libero_camera_image(obs, perspective_obs_key),
+                            )
                         else:
                             action = model.step(observation, task_description)
                         action_counter = action.shape[0]
@@ -395,7 +431,7 @@ def evaluate(
 def parse_args():
     seed_everything(0, workers=True)  # type: ignore
     parser = argparse.ArgumentParser(
-        description="Evaluate UniVLA on LIBERO with teacher-forced subgoal images."
+        description="Evaluate UniVLA on LIBERO with teacher-forced CoT or perspective images."
     )
     parser.add_argument("--debug", action="store_true", help="Save rollout GIFs.")
     parser.add_argument("--config_path", type=str, default=None)
@@ -464,6 +500,25 @@ def parse_args():
         help="Max horizon u for teacher-forced goal index (t + u).",
     )
     parser.add_argument(
+        "--teacher_force_mode",
+        type=str,
+        default="cot",
+        choices=["cot", "perspective"],
+        help="Use teacher-forced CoT subgoal tokens or GT images from a selected simulator perspective.",
+    )
+    parser.add_argument(
+        "--teacher_image_key",
+        type=str,
+        default="image",
+        help="Dataset image key used when teacher_force_mode=cot.",
+    )
+    parser.add_argument(
+        "--perspective_obs_key",
+        type=str,
+        default="robot0_eye_in_hand_image",
+        help="Observation key used when teacher_force_mode=perspective.",
+    )
+    parser.add_argument(
         "--no_gripper",
         action="store_true",
         help="Not to use gripper image"
@@ -479,6 +534,12 @@ def parse_args():
     )
     parser.add_argument(
         "--num_steps_wait", type=int, default=10, help="Initial wait steps."
+    )
+    parser.add_argument(
+        "--camera_resolution",
+        type=int,
+        default=256,
+        help="LIBERO offscreen render resolution per camera.",
     )
     parser.add_argument(
         "--run_id",
@@ -504,8 +565,10 @@ def get_run_id(args):
 def main():
     args = parse_args()
     seed_everything(args.seed, workers=True)  # type: ignore
-    if not args.with_cot:
+    if args.teacher_force_mode == "cot" and not args.with_cot:
         raise ValueError("Teacher-forced evaluation requires --with_cot.")
+    if args.teacher_force_mode == "perspective" and args.with_cot:
+        raise ValueError("Perspective teacher forcing expects the perspective VLA model, so omit --with_cot.")
 
     local_rank, rank, world_size = world_info_from_env()
 
@@ -532,9 +595,12 @@ def main():
                     "task_suite_name": args.task_suite_name,
                     "num_trials_per_task": args.num_trials_per_task,
                     "world_size": world_size,
+                    "teacher_force_mode": args.teacher_force_mode,
                     "teacher_data_path": args.teacher_data_path,
+                    "teacher_image_key": args.teacher_image_key,
                     "teacher_min_h": args.teacher_min_h,
                     "teacher_max_h": args.teacher_max_h,
+                    "perspective_obs_key": args.perspective_obs_key,
                     "results_pattern": "episodes_rank{rank}.jsonl",
                     "log_pattern": "eval_rank{rank}.txt",
                 },
@@ -542,33 +608,34 @@ def main():
                 indent=2,
             )
 
-    if args.teacher_min_h > args.teacher_max_h:
+    if args.teacher_force_mode == "cot" and args.teacher_min_h > args.teacher_max_h:
         raise ValueError(
             f"teacher_min_h ({args.teacher_min_h}) must be <= teacher_max_h ({args.teacher_max_h})"
         )
 
-    repo_root = Path(__file__).resolve().parents[4]
-    teacher_data_path = args.teacher_data_path
-    if not os.path.isabs(teacher_data_path):
-        candidate = repo_root / teacher_data_path
-        if candidate.exists():
-            teacher_data_path = str(candidate)
-    if args.with_cot and not os.path.exists(teacher_data_path):
-        raise FileNotFoundError(f"Teacher data path not found: {teacher_data_path}")
-
-    search_roots = [
-        str(Path.cwd()),
-        str(repo_root),
-        str(Path(teacher_data_path).resolve().parent),
-    ]
     teacher_sampler = None
-    if args.with_cot:
+    if args.teacher_force_mode == "cot":
+        repo_root = Path(__file__).resolve().parents[4]
+        teacher_data_path = args.teacher_data_path
+        if not os.path.isabs(teacher_data_path):
+            candidate = repo_root / teacher_data_path
+            if candidate.exists():
+                teacher_data_path = str(candidate)
+        if not os.path.exists(teacher_data_path):
+            raise FileNotFoundError(f"Teacher data path not found: {teacher_data_path}")
+
+        search_roots = [
+            str(Path.cwd()),
+            str(repo_root),
+            str(Path(teacher_data_path).resolve().parent),
+        ]
         teacher_sampler = TeacherForcingSampler(
             data_path=teacher_data_path,
             min_h=args.teacher_min_h,
             max_h=args.teacher_max_h,
             seed=args.seed + rank,
             search_roots=search_roots,
+            image_key=args.teacher_image_key,
         )
 
     model = EmuVLAModel(
@@ -592,6 +659,9 @@ def main():
         num_steps_wait=args.num_steps_wait,
         teacher_sampler=teacher_sampler,
         debug=args.debug,
+        teacher_force_mode=args.teacher_force_mode,
+        perspective_obs_key=args.perspective_obs_key,
+        camera_resolution=args.camera_resolution,
     )
 
     if dist.is_available() and dist.is_initialized():

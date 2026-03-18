@@ -60,6 +60,7 @@ def main(
     min_h: int,
     max_h: int,
     suites: list[str],
+    extra_views: list[str],
 ) -> None:
     os.makedirs(output_path, exist_ok=True)
     os.makedirs(normalizer_path, exist_ok=True)
@@ -67,6 +68,18 @@ def main(
     language_dir = osp.join(dataset_path, "libero_all")
     vq_dir = osp.join(dataset_path, "libero_all_codes_200")
     gripper_vq_dir = osp.join(dataset_path, "libero_all_gripper_codes_200")
+    extra_view_specs = [
+        ("birdview_image", osp.join(dataset_path, "libero_all_birdview_codes_200")),
+        ("sideview_image", osp.join(dataset_path, "libero_all_sideview_codes_200"))
+    ]
+    for spec in extra_views or []:
+        parts = spec.split("=", 1)
+        if len(parts) != 2:
+            raise ValueError(
+                f"Invalid extra view spec '{spec}'. Expected format: field_name=relative_codes_dir"
+            )
+        field_name, relative_dir = parts
+        extra_view_specs.append((field_name, osp.join(dataset_path, relative_dir)))
 
     min_frames = 8
     result_file = []
@@ -108,6 +121,22 @@ def main(
         if len(img_files) < min_frames or len(gripper_img_files) < min_frames:
             continue
 
+        extra_view_files = {}
+        missing_extra_view = False
+        for field_name, view_dir in extra_view_specs:
+            scene_view_dir = osp.join(view_dir, scene)
+            if not osp.exists(scene_view_dir):
+                missing_extra_view = True
+                break
+            view_files = [osp.join(scene_view_dir, file) for file in sorted(os.listdir(scene_view_dir), key=sort_by_int)]
+            if len(view_files) < min_frames:
+                missing_extra_view = True
+                break
+            extra_view_files[field_name] = view_files
+        if missing_extra_view:
+            print("No extra views")
+            continue
+
         cot_entries = []
         for entry in manifest.get(scene, []):
             goal_idx = entry.get("goal_idx", -1)
@@ -121,17 +150,18 @@ def main(
                 }
             )
         if not cot_entries:
+            print("No Cot entries")
             continue
 
-        result_file.append(
-            {
-                "text": text,
-                "image": img_files,
-                "action": action,
-                "gripper_image": gripper_img_files,
-                "reasoning": cot_entries,
-            }
-        )
+        sample = {
+            "text": text,
+            "image": img_files,
+            "action": action,
+            "gripper_image": gripper_img_files,
+            "reasoning": cot_entries,
+        }
+        sample.update(extra_view_files)
+        result_file.append(sample)
 
     print(f"Total number of valid scenes: {len(result_file)}")
     if not result_file:
@@ -171,6 +201,13 @@ if __name__ == "__main__":
     parser.add_argument("--manifest_min_h", type=int, default=5)
     parser.add_argument("--manifest_max_h", type=int, default=10)
     parser.add_argument("--manifest_suites", nargs="+", default=[""])
+    parser.add_argument(
+        "--extra_view",
+        action="append",
+        default=[],
+        help="Extra tokenized LIBERO view to include in the pickle, in the format "
+             "field_name=relative_codes_dir. Example: birdview_image=libero_all_birdview_codes_200",
+    )
     args = parser.parse_args()
 
     main(
@@ -182,4 +219,5 @@ if __name__ == "__main__":
         args.manifest_min_h,
         args.manifest_max_h,
         args.manifest_suites,
+        args.extra_view,
     )

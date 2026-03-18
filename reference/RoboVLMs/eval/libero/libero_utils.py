@@ -5,7 +5,7 @@ import os
 import sys
 import numpy as np
 # This requires to download LIBERO repo
-sys.path.append("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/LIBERO")
+sys.path.append("/inspire/hdd/global_user/chenfangke-253108540237/tsli/LIBERO")
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from moviepy.editor import ImageSequenceClip
@@ -27,7 +27,7 @@ def get_episode_length(task_suite_name="libero_object") -> int:
     return max_steps
 
 
-def get_libero_env(task, resolution=256, render_gpu_device_id=-1):
+def get_libero_env(task, resolution=256, render_gpu_device_id=-1, camera_names=None):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = os.path.join(
@@ -37,8 +37,10 @@ def get_libero_env(task, resolution=256, render_gpu_device_id=-1):
         "bddl_file_name": task_bddl_file,
         "camera_heights": resolution,
         "camera_widths": resolution,
-        "render_gpu_device_id": render_gpu_device_id
+        "render_gpu_device_id": render_gpu_device_id,
     }
+    if camera_names is not None:
+        env_args["camera_names"] = camera_names
     env = OffScreenRenderEnv(**env_args)
     env.seed(
         0
@@ -80,6 +82,22 @@ def get_libero_image(obs):
 def get_libero_wrist_image(obs):
     """Extracts wrist camera image from observations and preprocesses it."""
     img = obs["robot0_eye_in_hand_image"]
+    img = img[::-1, ::-1]  # IMPORTANT: rotate 180 degrees to match train preprocessing
+    return img
+
+
+def get_libero_camera_image(obs, camera_key):
+    """Extract and preprocess an arbitrary LIBERO camera observation."""
+    if camera_key == "robot0_eye_in_hand_image":
+        return get_libero_wrist_image(obs)
+    if camera_key == "agentview_image":
+        return get_libero_image(obs)
+    if camera_key not in obs:
+        raise KeyError(
+            f"Camera key '{camera_key}' not found in observation. "
+            f"Available keys: {sorted(obs.keys())}"
+        )
+    img = obs[camera_key]
     img = img[::-1, ::-1]  # IMPORTANT: rotate 180 degrees to match train preprocessing
     return img
 

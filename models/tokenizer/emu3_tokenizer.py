@@ -230,10 +230,18 @@ data_config = {
         'min_pixels': 128 * 128,
         'interval': 1,
         'SIZE': (200, 200),
-        'VIDEO_ROOT': '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_all',
-        # 'VIDEO_CODES_SAVE': '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_all_gripper_codes_200',
-        'VIDEO_CODES_SAVE': '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_all_codes_200',
-        'VIDEO_RECON_SAVE': '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_recon_256'
+        'VIDEO_ROOT': os.environ.get(
+            'LIBERO_VIDEO_ROOT',
+            '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_all'
+        ),
+        'VIDEO_CODES_SAVE': os.environ.get(
+            'LIBERO_CODES_SAVE',
+            '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_all_codes_200'
+        ),
+        'VIDEO_RECON_SAVE': os.environ.get(
+            'LIBERO_RECON_SAVE',
+            '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_recon_256'
+        )
     },
     'bridge_orig': {
         'min_pixels': 128 * 128,
@@ -437,9 +445,8 @@ if __name__ == "__main__":
         elif process_data == 'Calvin_raw':
             images, image_paths = load_images(osp.join(VIDEO_ROOT, video), SIZE, interval)
         elif process_data == 'libero':
-            # remember to process the images and gripper images
-            images, image_paths = load_images(osp.join(VIDEO_ROOT, video, 'images'), SIZE, interval)
-            # images, image_paths = load_images(osp.join(VIDEO_ROOT, video,'gripper_images'), SIZE, interval)
+            libero_view_subdir = os.environ.get('LIBERO_VIEW_SUBDIR', 'images')
+            images, image_paths = load_images(osp.join(VIDEO_ROOT, video, libero_view_subdir), SIZE, interval)
         elif process_data == 'Calvin_partial':
             images, image_paths = load_images(osp.join(VIDEO_ROOT, video,'rgb_static'), SIZE, interval)
             # images, image_paths = load_images(osp.join(VIDEO_ROOT, video,'rgb_gripper'), SIZE, interval)

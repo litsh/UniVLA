@@ -6,7 +6,13 @@ NGPUS=8
 
 DATAPATH='/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/meta/libero_all_norm.pkl'
 ACTION_TOKENIZER_PATH="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/pretrain/fast"
-EXP_NAME="UNIVLA_LIBERO_CoTVLA_BS192_12k_gripper=False_separate_loss"
+PERSPECTIVE_IMAGE_KEY="birdview_image"
+PERSPECTIVE_VIEW_NAME="birdview"
+EXP_NAME=${EXP_NAME:-"UNIVLA_LIBERO_PERSPECTIVE_${PERSPECTIVE_VIEW_NAME}_BS192_10k"}
+
+# Perspective imagination: predict the configured target view tokens first, then generate actions.
+# Example:
+#   PERSPECTIVE_IMAGE_KEY=birdview_image PERSPECTIVE_VIEW_NAME=birdview bash scripts/simulator/libero/train_libero_perspective_vla.sh
 global_batch_size=192
 per_gpu_batch_size=3
 grad_accumulation_steps=$((global_batch_size / NGPUS / per_gpu_batch_size))
@@ -32,7 +38,7 @@ torchrun \
     --bf16 True \
     --tf32 True \
     --data_path ${DATAPATH} \
-    --max_steps 12000 \
+    --max_steps 10000 \
     --dataloader_num_workers 12 \
     --lr_scheduler_type "cosine_with_min_lr" \
     --warmup_steps 50 \
@@ -42,7 +48,7 @@ torchrun \
     --seed 42 \
     --logging_steps 20 \
     --gradient_checkpointing True \
-    --apply_loss_on_only_action True \
+    --apply_loss_on_only_action False \
     --actions True \
     --actions_format "fast" \
     --action_tokenizer_path ${ACTION_TOKENIZER_PATH} \
@@ -52,4 +58,5 @@ torchrun \
     --save_steps 2000 \
     --eval_strategy no \
     --use_gripper False \
-    --with_cot True 
+    --with_perspective True \
+    --perspective_image_key "${PERSPECTIVE_IMAGE_KEY}"

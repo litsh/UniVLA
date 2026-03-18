@@ -9,7 +9,7 @@ from transformers import AutoModel, AutoImageProcessor, GenerationConfig, AutoPr
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.generation import LogitsProcessorList, PrefixConstrainedLogitsProcessor, UnbatchedClassifierFreeGuidanceLogitsProcessor
 import sys
-sys.path.append("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/reference/Emu3")
+sys.path.append("/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/reference/Emu3")
 from emu3.mllm import Emu3Tokenizer, Emu3ForCausalLM, Emu3Processor
 from emu3.mllm import Emu3MoE
 from transformers import LogitsProcessor
@@ -124,7 +124,7 @@ class EmuVLAModel:
             )
 
         # fast tokenization
-        fast_path = "/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/pretrain/fast"
+        fast_path = "/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/pretrain/fast"
         self.action_tokenizer = AutoProcessor.from_pretrained(fast_path, trust_remote_code=True)
 
         self.rgb_list = []
@@ -225,13 +225,87 @@ class EmuVLAModel:
         context_attention_mask = torch.cat([context_attention_mask, torch.ones_like(eot_tensor)], dim=1)
         return context_input_ids, context_attention_mask
 
-    def step(self, image, goal, goal_tokens=None):
+    def _encode_visual_condition_image(self, image):
+        if isinstance(image, Image.Image):
+            pil_image = image
+        else:
+            pil_image = Image.fromarray(image)
+        pil_image = pil_image.resize((200, 200))
+        image_x = self.image_processor(pil_image, return_tensors="pt")["pixel_values"].to(self.device)
+        image_code = self.image_tokenizer.encode(image_x)
+        if image_code.ndim == 4:
+            image_code = image_code.squeeze(1)
+        return image_code
+
+    def _append_teacher_perspective_tokens(self, context_input_ids, context_attention_mask, perspective_image):
+        perspective_tokens = self._encode_visual_condition_image(perspective_image)
+        bot_tensor = torch.full(
+            (context_input_ids.size(0), 1),
+            self.tokenizer.convert_tokens_to_ids(self.tokenizer.bot_token),
+            dtype=context_input_ids.dtype,
+            device=context_input_ids.device,
+        )
+        context_input_ids = torch.cat([context_input_ids, bot_tensor], dim=1)
+        context_attention_mask = torch.cat([context_attention_mask, torch.ones_like(bot_tensor)], dim=1)
+
+        perspective_prompt = self.tokenizer(
+            self.processor.format_video_prompt(perspective_tokens),
+            padding=False,
+            return_token_type_ids=False,
+            return_tensors="pt",
+        )
+        perspective_input_ids = perspective_prompt["input_ids"].to(self.device)
+        perspective_attention_mask = perspective_prompt["attention_mask"].to(self.device)
+        context_input_ids = torch.cat([context_input_ids, perspective_input_ids], dim=1)
+        context_attention_mask = torch.cat([context_attention_mask, perspective_attention_mask], dim=1)
+        eot_tensor = torch.full(
+            (context_input_ids.size(0), 1),
+            self.eot_token_id,
+            dtype=context_input_ids.dtype,
+            device=context_input_ids.device,
+        )
+        context_input_ids = torch.cat([context_input_ids, eot_tensor], dim=1)
+        context_attention_mask = torch.cat([context_attention_mask, torch.ones_like(eot_tensor)], dim=1)
+        return context_input_ids, context_attention_mask
+
+    def _build_perspective_context(self, prompt, video_code, gripper_code):
+        text_prompt = self.tokenizer(
+            self.tokenizer.bos_token + prompt,
+            padding=False,
+            return_token_type_ids=False,
+            return_tensors="pt",
+        )
+        context_input_ids = text_prompt["input_ids"].to(self.device)
+        context_attention_mask = text_prompt["attention_mask"].to(self.device)
+
+        obs_prompt = self.tokenizer(
+            self.processor.format_video_prompt(video_code[0]),
+            padding=False,
+            return_token_type_ids=False,
+            return_tensors="pt",
+        )
+        context_input_ids = torch.cat([context_input_ids, obs_prompt["input_ids"].to(self.device)], dim=1)
+        context_attention_mask = torch.cat([context_attention_mask, obs_prompt["attention_mask"].to(self.device)], dim=1)
+
+        if gripper_code is not None:
+            gripper_prompt = self.tokenizer(
+                self.processor.format_video_prompt(gripper_code[0]),
+                padding=False,
+                return_token_type_ids=False,
+                return_tensors="pt",
+            )
+            context_input_ids = torch.cat([context_input_ids, gripper_prompt["input_ids"].to(self.device)], dim=1)
+            context_attention_mask = torch.cat([context_attention_mask, gripper_prompt["attention_mask"].to(self.device)], dim=1)
+
+        return context_input_ids, context_attention_mask
+
+    def step(self, image, goal, goal_tokens=None, perspective_image=None):
         input_dict = dict()
         
         image_code, gripper_code = self.preprocess(image)
 
         prompt_text = goal
-        if self.use_cot:
+        if self.use_cot or perspective_image is not None:
             prompt_text = f"Given the image of the current state, what actions should the robot take to {goal}? Output the low-level action(s) to take."
             
         prompt,neg_prompt = prompt_text,""
@@ -250,6 +324,8 @@ class EmuVLAModel:
                     padding="longest",
                 )
             pos_inputs = self.processor.video_process(text=prompt, video_tokens=video_code, gripper_tokens=gripper_code ,context_frames=self.context_frames, frames = self.predict_frames, return_tensors="pt", **kwargs)
+        elif perspective_image is not None:
+            pos_inputs = None
         else:
             pos_inputs = self.processor.video_process(text=prompt, video_tokens=video_code, gripper_tokens=gripper_code ,context_frames=self.context_frames, frames = self.predict_frames, return_tensors="pt", **self.kwargs)
         
@@ -303,11 +379,16 @@ class EmuVLAModel:
             final_inputs['input_ids'] = concatenated_input_ids
             final_inputs['token_type_ids'] = concatenated_token_type_ids
             final_inputs['attention_mask'] = concatenated_attention_mask
+        elif perspective_image is not None:
+            context_input_ids, context_attention_mask = self._build_perspective_context(
+                prompt, video_code, gripper_code
+            )
+            context_length = context_input_ids.shape[-1]
         else:
             final_inputs = pos_inputs
-        context_input_ids = final_inputs.input_ids.to(self.device)
-        context_attention_mask = final_inputs.attention_mask.to(self.device)
-        context_length = context_input_ids.shape[-1]
+            context_input_ids = final_inputs.input_ids.to(self.device)
+            context_attention_mask = final_inputs.attention_mask.to(self.device)
+            context_length = context_input_ids.shape[-1]
         thought_text = ""
 
         if self.use_cot:
@@ -337,6 +418,19 @@ class EmuVLAModel:
             context_input_ids = torch.cat([context_input_ids, boa_tensor], dim=1)
             context_attention_mask = torch.ones_like(context_input_ids)
             context_length = context_input_ids.shape[-1]
+        elif perspective_image is not None:
+            context_input_ids, context_attention_mask = self._append_teacher_perspective_tokens(
+                context_input_ids, context_attention_mask, perspective_image
+            )
+            boa_tensor = torch.full(
+                (context_input_ids.size(0), 1),
+                self.boa_token_id,
+                dtype=context_input_ids.dtype,
+                device=context_input_ids.device,
+            )
+            context_input_ids = torch.cat([context_input_ids, boa_tensor], dim=1)
+            context_attention_mask = torch.ones_like(context_input_ids)
+            context_length = context_input_ids.shape[-1]
 
         if self.use_fast: 
             last_token_id = self.tokenizer.pad_token_id - 1
@@ -353,9 +447,9 @@ class EmuVLAModel:
                 )
             # omit the eoa token
             orig_outputs = outputs[:, context_length:]
-            # with open("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/cot_debug/debug_output_no_prefix.txt", "w") as f:
-            #     out = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
-            #     print(f"use_gripper: {self.use_gripper}")
+            # with open("/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/cot_debug/perspective_vla_eval_prompt.txt", "w") as f:
+            #     out = self.tokenizer.decode(context_input_ids[0], skip_special_tokens=False)
+            #     # print(f"use_gripper: {self.use_gripper}")
             #     print(out, file=f)
             #     exit(0)
             outputs = outputs[:, context_length:-1]

@@ -1,6 +1,7 @@
 import os
 import os.path as osp
 import torch
+import torch.nn.functional as F
 from dataclasses import dataclass, field
 from typing import Optional, List
 import pathlib
@@ -10,10 +11,199 @@ import sys
 sys.path.append("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/reference/Emu3")
 from emu3.mllm import Emu3Config, Emu3Tokenizer, Emu3ForCausalLM, Emu3MoE, Emu3MoEConfig
 from transformers import AutoModel,Trainer
-from datasets import Emu3WorldModelDataset,Emu3RealRobotDataset,Emu3CoTDataset
+from datasets import Emu3WorldModelDataset,Emu3RealRobotDataset,Emu3CoTDataset,Emu3PerspectiveDataset
 from torch.utils.data import WeightedRandomSampler, DataLoader
 
-class WeightedSamplerTrainer(Trainer):
+class TokenLossLoggingTrainer(Trainer):
+    def __init__(
+        self,
+        *args,
+        visual_token_range=None,
+        action_token_range=None,
+        reasoning_phrase_ids_list=None,
+        bot_token_id=None,
+        eot_token_id=None,
+        eoi_token_id=None,
+        boa_token_id=None,
+        eoa_token_id=None,
+        perspective_strict: bool = False,
+        ignore_index: int = -100,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.visual_token_range = visual_token_range
+        self.action_token_range = action_token_range
+        self.reasoning_phrase_ids_list = reasoning_phrase_ids_list or []
+        self.bot_token_id = bot_token_id
+        self.eot_token_id = eot_token_id
+        self.eoi_token_id = eoi_token_id
+        self.boa_token_id = boa_token_id
+        self.eoa_token_id = eoa_token_id
+        self.perspective_strict = perspective_strict
+        self.ignore_index = ignore_index
+        self._last_token_losses = {}
+
+    def _masked_mean(self, loss_per_token, mask):
+        count = mask.sum()
+        if count.item() == 0:
+            return torch.tensor(0.0, device=loss_per_token.device), count
+        loss = (loss_per_token * mask).sum() / count
+        return loss, count
+
+    def _id_mask(self, labels, ids):
+        if not ids:
+            return torch.zeros_like(labels, dtype=torch.bool)
+        mask = labels.eq(ids[0])
+        for token_id in ids[1:]:
+            mask = mask | labels.eq(token_id)
+        return mask
+
+    def _find_first_subsequence(self, seq, subseq):
+        if not subseq:
+            return None
+        max_start = len(seq) - len(subseq) + 1
+        if max_start < 1:
+            return None
+        for i in range(max_start):
+            if seq[i:i + len(subseq)] == subseq:
+                return i
+        return None
+
+    def _find_phrase_start(self, seq):
+        if self.bot_token_id is None:
+            return None
+        best_start = None
+        for phrase_ids in self.reasoning_phrase_ids_list:
+            combined = [self.bot_token_id] + phrase_ids
+            start = self._find_first_subsequence(seq, combined)
+            if start is not None and (best_start is None or start < best_start):
+                best_start = start
+        if best_start is not None:
+            return best_start
+        # Fallback: allow empty or changed prompt by anchoring on the first bot token.
+        try:
+            return seq.index(self.bot_token_id)
+        except ValueError:
+            if self.perspective_strict:
+                raise ValueError("bot_token not found while perspective_strict is enabled")
+            return None
+
+    def _build_visual_with_special_mask(self, shift_input_ids):
+        mask = torch.zeros_like(shift_input_ids, dtype=torch.bool)
+        batch_size, seq_len = shift_input_ids.shape
+        for b in range(batch_size):
+            seq = shift_input_ids[b].tolist()
+            start = self._find_phrase_start(seq)
+            if start is None:
+                # No visual-with-special span found; keep mask empty for this sample.
+                continue
+            end = None
+            if self.eot_token_id is not None:
+                try:
+                    end = seq.index(self.eot_token_id, start)
+                except ValueError:
+                    end = None
+            if end is None:
+                # No end token; leave mask empty for this sample.
+                continue
+            mask[b, start:end + 1] = True
+        return mask
+
+    def _build_action_with_special_mask(self, shift_input_ids):
+        mask = torch.zeros_like(shift_input_ids, dtype=torch.bool)
+        batch_size, seq_len = shift_input_ids.shape
+        for b in range(batch_size):
+            seq = shift_input_ids[b].tolist()
+            start = None
+            if self.boa_token_id is not None:
+                try:
+                    start = seq.index(self.boa_token_id)
+                except ValueError:
+                    start = None
+            if start is None:
+                raise ValueError(f"action_with_special start not found for sample {b}")
+            end = None
+            if self.eoa_token_id is not None:
+                try:
+                    end = seq.index(self.eoa_token_id, start)
+                except ValueError:
+                    end = None
+            if end is None:
+                raise ValueError(f"action_with_special end not found for sample {b}")
+            mask[b, start:end + 1] = True
+        return mask
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        labels = inputs.get("labels")
+        outputs = model(**inputs)
+        loss = outputs["loss"] if isinstance(outputs, dict) else outputs.loss
+
+        self._last_token_losses = {}
+        if labels is not None and hasattr(outputs, "logits"):
+            if self.visual_token_range or self.action_token_range:
+                with torch.no_grad():
+                    logits = outputs.logits
+                    shift_logits = logits[..., :-1, :].contiguous()
+                    shift_labels = labels[..., 1:].contiguous()
+
+                    vocab_size = shift_logits.size(-1)
+                    loss_per_token = F.cross_entropy(
+                        shift_logits.view(-1, vocab_size),
+                        shift_labels.view(-1),
+                        reduction="none",
+                        ignore_index=self.ignore_index,
+                    ).view(shift_labels.size())
+
+                    valid_mask = shift_labels.ne(self.ignore_index)
+                    if self.visual_token_range:
+                        vmin, vmax = self.visual_token_range
+                        visual_content_mask = valid_mask & shift_labels.ge(vmin) & shift_labels.le(vmax)
+                        visual_content_loss, _ = self._masked_mean(loss_per_token, visual_content_mask)
+                        self._last_token_losses["loss/visual_content"] = visual_content_loss.detach()
+
+                    if self.action_token_range:
+                        amin, amax = self.action_token_range
+                        action_content_mask = valid_mask & shift_labels.ge(amin) & shift_labels.le(amax)
+                        action_content_loss, _ = self._masked_mean(loss_per_token, action_content_mask)
+                        self._last_token_losses["loss/action_content"] = action_content_loss.detach()
+
+                    input_ids = inputs.get("input_ids")
+                    attention_mask = inputs.get("attention_mask")
+                    if input_ids is not None and attention_mask is not None:
+                        shift_input_ids = input_ids[..., 1:].contiguous()
+                        shift_attention_mask = attention_mask[..., 1:].contiguous().bool()
+                        loss_per_token_full = F.cross_entropy(
+                            shift_logits.view(-1, vocab_size),
+                            shift_input_ids.view(-1),
+                            reduction="none",
+                        ).view(shift_input_ids.size())
+
+                        visual_with_special_mask = self._build_visual_with_special_mask(shift_input_ids)
+                        visual_with_special_mask = visual_with_special_mask & shift_attention_mask
+                        visual_with_special_loss, _ = self._masked_mean(
+                            loss_per_token_full, visual_with_special_mask
+                        )
+                        self._last_token_losses["loss/visual_with_special"] = visual_with_special_loss.detach()
+
+                        action_with_special_mask = self._build_action_with_special_mask(shift_input_ids)
+                        action_with_special_mask = action_with_special_mask & shift_attention_mask
+                        action_with_special_loss, _ = self._masked_mean(
+                            loss_per_token_full, action_with_special_mask
+                        )
+                        self._last_token_losses["loss/action_with_special"] = action_with_special_loss.detach()
+
+        if return_outputs:
+            return loss, outputs
+        return loss
+
+    def log(self, logs):
+        if self._last_token_losses:
+            logs = dict(logs)
+            for key, value in self._last_token_losses.items():
+                logs[key] = float(value)
+        return super().log(logs)
+
+class WeightedSamplerTrainer(TokenLossLoggingTrainer):
     def get_train_dataloader(self):
         # Assuming train_dataset has a sample_weights attribute
         sample_weights = torch.tensor(
@@ -66,6 +256,8 @@ class DataArguments:
     without_text: bool = field(default=False)
     real_robot: bool = field(default=False)
     with_cot: bool = field(default=False)
+    with_perspective: bool = field(default=False)
+    perspective_image_key: str = field(default="gripper_image")
 
 @dataclass
 class TrainingArguments(tf.TrainingArguments):
@@ -105,6 +297,8 @@ def get_dataset(data_args, tokenizer):
         return Emu3RealRobotDataset(data_args, tokenizer=tokenizer)
     elif data_args.with_cot:
         return Emu3CoTDataset(data_args, tokenizer=tokenizer)
+    elif data_args.with_perspective:
+        return Emu3PerspectiveDataset(data_args, tokenizer=tokenizer)
     return Emu3SFTDataset(data_args, tokenizer=tokenizer)
 
 def get_dataset_split(data_args, tokenizer):
@@ -128,6 +322,49 @@ def update_configs(model_config, args, fields):
 
     for f in fields:
         cross_update(model_config, args, f)
+
+def get_token_ranges(data_args, tokenizer, train_dataset):
+    bov = tokenizer.encode(data_args.visual_token_pattern.format(token_id=0))[0]
+    eov = tokenizer.encode(data_args.visual_token_pattern.format(token_id=data_args.codebook_size - 1))[0]
+    visual_range = (bov, eov)
+    reasoning_phrases = [
+        "To complete the task, we can get to the next state like this: ",
+        "From another perspective, the eye-in-hand view looks like: ",
+        ""
+    ]
+    reasoning_phrase_ids_list = [
+        tokenizer.encode(p, add_special_tokens=False) for p in reasoning_phrases
+    ]
+    reasoning_phrase_ids_list = [p for p in reasoning_phrase_ids_list if p]
+    bot_token_id = tokenizer.encode(tokenizer.bot_token)[0]
+    eot_token_id = tokenizer.encode(tokenizer.eot_token)[0]
+    eoi_token_id = tokenizer.encode(tokenizer.eoi_token)[0]
+
+    action_range = None
+    boa_token_id = tokenizer.encode(tokenizer.boa_token)[0]
+    eoa_token_id = tokenizer.encode(tokenizer.eoa_token)[0]
+    if getattr(data_args, "actions", False) and hasattr(train_dataset, "action_tokenizer"):
+        last_vocab_idx = tokenizer.pad_token_id - 1
+        action_tokenizer = train_dataset.action_tokenizer
+        if hasattr(action_tokenizer, "action_token_begin_idx"):
+            action_min = action_tokenizer.action_token_begin_idx + 1
+            action_max = last_vocab_idx - 1
+            action_range = (action_min, action_max)
+        elif hasattr(action_tokenizer, "vocab_size"):
+            action_min = last_vocab_idx - (action_tokenizer.vocab_size - 1)
+            action_max = last_vocab_idx
+            action_range = (action_min, action_max)
+
+    return (
+        visual_range,
+        reasoning_phrase_ids_list,
+        bot_token_id,
+        eot_token_id,
+        eoi_token_id,
+        action_range,
+        boa_token_id,
+        eoa_token_id,
+    )
 
 def train():
     """
@@ -157,6 +394,18 @@ def train():
 
     # Initialize dataset
     train_dataset = get_dataset(data_args, tokenizer)
+    (
+        visual_range,
+        reasoning_phrase_ids_list,
+        bot_token_id,
+        eot_token_id,
+        eoi_token_id,
+        action_range,
+        boa_token_id,
+        eoa_token_id,
+    ) = get_token_ranges(
+        data_args, tokenizer, train_dataset
+    )
 
     if data_args.datasets_weight:
         trainer = WeightedSamplerTrainer(
@@ -164,14 +413,34 @@ def train():
             args=training_args,
             train_dataset=train_dataset, 
             tokenizer=tokenizer,
+            visual_token_range=visual_range,
+            action_token_range=action_range,
+            reasoning_phrase_ids_list=reasoning_phrase_ids_list,
+            bot_token_id=bot_token_id,
+            eot_token_id=eot_token_id,
+            eoi_token_id=eoi_token_id,
+            boa_token_id=boa_token_id,
+            eoa_token_id=eoa_token_id,
+            perspective_strict=data_args.with_perspective,
+            ignore_index=data_args.ignore_index,
         )
     else:
         # Setup Trainer
-        trainer = tf.Trainer(
+        trainer = TokenLossLoggingTrainer(
             model=model,
             args=training_args,
             train_dataset=train_dataset,
             tokenizer=tokenizer,  # Pass tokenizer to trainer
+            visual_token_range=visual_range,
+            action_token_range=action_range,
+            reasoning_phrase_ids_list=reasoning_phrase_ids_list,
+            bot_token_id=bot_token_id,
+            eot_token_id=eot_token_id,
+            eoi_token_id=eoi_token_id,
+            boa_token_id=boa_token_id,
+            eoa_token_id=eoa_token_id,
+            perspective_strict=data_args.with_perspective,
+            ignore_index=data_args.ignore_index,
         )
 
     # Check if resuming from checkpoint
