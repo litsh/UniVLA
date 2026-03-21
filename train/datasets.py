@@ -998,6 +998,12 @@ class Emu3PerspectiveDataset(Emu3SFTDataset):
         super().__init__(args, tokenizer=tokenizer)
         self.perspective_image_key = getattr(args, "perspective_image_key", "gripper_image")
 
+    def _perspective_view_name(self):
+        view_name = self.perspective_image_key
+        if view_name.endswith("_image"):
+            view_name = view_name[: -len("_image")]
+        return view_name.replace("_", " ")
+
     def load_token_clip(self, paths):
         frames = [torch.from_numpy(np.load(path)) for path in paths]
         if not frames:
@@ -1103,7 +1109,8 @@ class Emu3PerspectiveDataset(Emu3SFTDataset):
         )
         append_segment(obs_prompt, supervise=False)
 
-        # dperspective_text = "From another perspective, the eye-in-hand view looks like: "
+        view_name = self._perspective_view_name()
+        # perspective_text = f"The current state from {view_name} is: "
         perspective_text = ""
         perspective_prompt = self.tokenizer(
             self.tokenizer.bot_token + perspective_text,
@@ -1139,12 +1146,7 @@ class Emu3PerspectiveDataset(Emu3SFTDataset):
         if self.actions:
             if self.args.apply_loss_on_only_action and not getattr(self.args, "with_perspective", False):
                 sample["labels"] = torch.full_like(sample["labels"], self.args.ignore_index)
-            if self.actions_format == "continuous":
-                boa_token_id = self.tokenizer.encode(self.tokenizer.boa_token)[0]
-                sample = self.append_boa_to_sample(sample, [boa_token_id])
-                sample["action"] = action_continuous
-            else:
-                sample = self.append_action_to_sample(sample, action_ids)
+            sample = self.append_action_to_sample(sample, action_ids)
 
         sample = self.tokenizer.pad(
             sample,

@@ -28,6 +28,11 @@ class TokenLossLoggingTrainer(Trainer):
         eoa_token_id=None,
         perspective_strict: bool = False,
         ignore_index: int = -100,
+        use_group_loss_weighting: bool = False,
+        visual_content_loss_weight: float = 1.0,
+        visual_special_loss_weight: float = 1.0,
+        action_content_loss_weight: float = 1.0,
+        action_special_loss_weight: float = 1.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -41,6 +46,11 @@ class TokenLossLoggingTrainer(Trainer):
         self.eoa_token_id = eoa_token_id
         self.perspective_strict = perspective_strict
         self.ignore_index = ignore_index
+        self.use_group_loss_weighting = use_group_loss_weighting
+        self.visual_content_loss_weight = visual_content_loss_weight
+        self.visual_special_loss_weight = visual_special_loss_weight
+        self.action_content_loss_weight = action_content_loss_weight
+        self.action_special_loss_weight = action_special_loss_weight
         self._last_token_losses = {}
 
     def _masked_mean(self, loss_per_token, mask):
@@ -105,7 +115,7 @@ class TokenLossLoggingTrainer(Trainer):
                     end = None
             if end is None:
                 # No end token; leave mask empty for this sample.
-                continue
+                raise ValueError("eot_token not found.")
             mask[b, start:end + 1] = True
         return mask
 
@@ -141,56 +151,74 @@ class TokenLossLoggingTrainer(Trainer):
         self._last_token_losses = {}
         if labels is not None and hasattr(outputs, "logits"):
             if self.visual_token_range or self.action_token_range:
-                with torch.no_grad():
-                    logits = outputs.logits
-                    shift_logits = logits[..., :-1, :].contiguous()
-                    shift_labels = labels[..., 1:].contiguous()
+                logits = outputs.logits
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
 
-                    vocab_size = shift_logits.size(-1)
-                    loss_per_token = F.cross_entropy(
-                        shift_logits.view(-1, vocab_size),
-                        shift_labels.view(-1),
-                        reduction="none",
-                        ignore_index=self.ignore_index,
-                    ).view(shift_labels.size())
+                vocab_size = shift_logits.size(-1)
+                loss_per_token = F.cross_entropy(
+                    shift_logits.view(-1, vocab_size),
+                    shift_labels.view(-1),
+                    reduction="none",
+                    ignore_index=self.ignore_index,
+                ).view(shift_labels.size())
 
-                    valid_mask = shift_labels.ne(self.ignore_index)
-                    if self.visual_token_range:
-                        vmin, vmax = self.visual_token_range
-                        visual_content_mask = valid_mask & shift_labels.ge(vmin) & shift_labels.le(vmax)
-                        visual_content_loss, _ = self._masked_mean(loss_per_token, visual_content_mask)
-                        self._last_token_losses["loss/visual_content"] = visual_content_loss.detach()
+                valid_mask = shift_labels.ne(self.ignore_index)
+                visual_content_mask = torch.zeros_like(shift_labels, dtype=torch.bool)
+                action_content_mask = torch.zeros_like(shift_labels, dtype=torch.bool)
+                if self.visual_token_range:
+                    vmin, vmax = self.visual_token_range
+                    visual_content_mask = valid_mask & shift_labels.ge(vmin) & shift_labels.le(vmax)
+                if self.action_token_range:
+                    amin, amax = self.action_token_range
+                    action_content_mask = valid_mask & shift_labels.ge(amin) & shift_labels.le(amax)
 
-                    if self.action_token_range:
-                        amin, amax = self.action_token_range
-                        action_content_mask = valid_mask & shift_labels.ge(amin) & shift_labels.le(amax)
-                        action_content_loss, _ = self._masked_mean(loss_per_token, action_content_mask)
-                        self._last_token_losses["loss/action_content"] = action_content_loss.detach()
+                input_ids = inputs.get("input_ids")
+                attention_mask = inputs.get("attention_mask")
+                visual_special_mask = torch.zeros_like(shift_labels, dtype=torch.bool)
+                action_special_mask = torch.zeros_like(shift_labels, dtype=torch.bool)
+                if input_ids is not None and attention_mask is not None:
+                    shift_input_ids = input_ids[..., 1:].contiguous()
+                    shift_attention_mask = attention_mask[..., 1:].contiguous().bool()
 
-                    input_ids = inputs.get("input_ids")
-                    attention_mask = inputs.get("attention_mask")
-                    if input_ids is not None and attention_mask is not None:
-                        shift_input_ids = input_ids[..., 1:].contiguous()
-                        shift_attention_mask = attention_mask[..., 1:].contiguous().bool()
-                        loss_per_token_full = F.cross_entropy(
-                            shift_logits.view(-1, vocab_size),
-                            shift_input_ids.view(-1),
-                            reduction="none",
-                        ).view(shift_input_ids.size())
+                    visual_with_special_mask = self._build_visual_with_special_mask(shift_input_ids)
+                    visual_with_special_mask = visual_with_special_mask & shift_attention_mask & valid_mask
+                    visual_special_mask = visual_with_special_mask & (~visual_content_mask)
 
-                        visual_with_special_mask = self._build_visual_with_special_mask(shift_input_ids)
-                        visual_with_special_mask = visual_with_special_mask & shift_attention_mask
-                        visual_with_special_loss, _ = self._masked_mean(
-                            loss_per_token_full, visual_with_special_mask
-                        )
-                        self._last_token_losses["loss/visual_with_special"] = visual_with_special_loss.detach()
+                    action_with_special_mask = self._build_action_with_special_mask(shift_input_ids)
+                    action_with_special_mask = action_with_special_mask & shift_attention_mask & valid_mask
+                    action_special_mask = action_with_special_mask & (~action_content_mask)
 
-                        action_with_special_mask = self._build_action_with_special_mask(shift_input_ids)
-                        action_with_special_mask = action_with_special_mask & shift_attention_mask
-                        action_with_special_loss, _ = self._masked_mean(
-                            loss_per_token_full, action_with_special_mask
-                        )
-                        self._last_token_losses["loss/action_with_special"] = action_with_special_loss.detach()
+                group_losses = {}
+                visual_content_loss, _ = self._masked_mean(loss_per_token, visual_content_mask)
+                action_content_loss, _ = self._masked_mean(loss_per_token, action_content_mask)
+                visual_special_loss, _ = self._masked_mean(loss_per_token, visual_special_mask)
+                action_special_loss, _ = self._masked_mean(loss_per_token, action_special_mask)
+
+                group_losses["loss/visual_content"] = visual_content_loss
+                group_losses["loss/action_content"] = action_content_loss
+                group_losses["loss/visual_special"] = visual_special_loss
+                group_losses["loss/action_special"] = action_special_loss
+                group_losses["loss/groups_unweighted_total"] = (
+                    visual_content_loss
+                    + action_content_loss
+                    + visual_special_loss
+                    + action_special_loss
+                )
+
+                self._last_token_losses = {
+                    key: value.detach() for key, value in group_losses.items()
+                }
+
+                if self.use_group_loss_weighting:
+                    weighted_loss = (
+                        self.visual_content_loss_weight * visual_content_loss
+                        + self.visual_special_loss_weight * visual_special_loss
+                        + self.action_content_loss_weight * action_content_loss
+                        + self.action_special_loss_weight * action_special_loss
+                    )
+                    self._last_token_losses["loss/groups_weighted_total"] = weighted_loss.detach()
+                    loss = weighted_loss
 
         if return_outputs:
             return loss, outputs
@@ -258,6 +286,11 @@ class DataArguments:
     with_cot: bool = field(default=False)
     with_perspective: bool = field(default=False)
     perspective_image_key: str = field(default="gripper_image")
+    use_group_loss_weighting: bool = field(default=False)
+    visual_content_loss_weight: float = field(default=1.0)
+    visual_special_loss_weight: float = field(default=1.0)
+    action_content_loss_weight: float = field(default=1.0)
+    action_special_loss_weight: float = field(default=1.0)
 
 @dataclass
 class TrainingArguments(tf.TrainingArguments):
@@ -329,7 +362,6 @@ def get_token_ranges(data_args, tokenizer, train_dataset):
     visual_range = (bov, eov)
     reasoning_phrases = [
         "To complete the task, we can get to the next state like this: ",
-        "From another perspective, the eye-in-hand view looks like: ",
         ""
     ]
     reasoning_phrase_ids_list = [
@@ -423,6 +455,11 @@ def train():
             eoa_token_id=eoa_token_id,
             perspective_strict=data_args.with_perspective,
             ignore_index=data_args.ignore_index,
+            use_group_loss_weighting=data_args.use_group_loss_weighting,
+            visual_content_loss_weight=data_args.visual_content_loss_weight,
+            visual_special_loss_weight=data_args.visual_special_loss_weight,
+            action_content_loss_weight=data_args.action_content_loss_weight,
+            action_special_loss_weight=data_args.action_special_loss_weight,
         )
     else:
         # Setup Trainer
@@ -441,6 +478,11 @@ def train():
             eoa_token_id=eoa_token_id,
             perspective_strict=data_args.with_perspective,
             ignore_index=data_args.ignore_index,
+            use_group_loss_weighting=data_args.use_group_loss_weighting,
+            visual_content_loss_weight=data_args.visual_content_loss_weight,
+            visual_special_loss_weight=data_args.visual_special_loss_weight,
+            action_content_loss_weight=data_args.action_content_loss_weight,
+            action_special_loss_weight=data_args.action_special_loss_weight,
         )
 
     # Check if resuming from checkpoint
