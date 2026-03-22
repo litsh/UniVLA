@@ -5,7 +5,7 @@ import os
 import sys
 import numpy as np
 # This requires to download LIBERO repo
-sys.path.append("/inspire/hdd/global_user/chenfangke-253108540237/tsli/LIBERO")
+sys.path.append("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//LIBERO")
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from moviepy.editor import ImageSequenceClip
@@ -88,6 +88,8 @@ def get_libero_wrist_image(obs):
 
 def get_libero_camera_image(obs, camera_key):
     """Extract and preprocess an arbitrary LIBERO camera observation."""
+    if camera_key == "gripper_image":
+        camera_key = "robot0_eye_in_hand_image"
     if camera_key == "robot0_eye_in_hand_image":
         return get_libero_wrist_image(obs)
     if camera_key == "agentview_image":

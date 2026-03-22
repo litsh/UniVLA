@@ -189,6 +189,8 @@ def prepare_observation(obs):
 
 
 def obs_key_to_camera_name(obs_key):
+    if obs_key == "gripper_image":
+        return "robot0_eye_in_hand"
     if not obs_key.endswith("_image"):
         raise ValueError(f"Unexpected observation key format: {obs_key}")
     return obs_key[: -len("_image")]

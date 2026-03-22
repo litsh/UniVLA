@@ -16,6 +16,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from PIL import Image
 import tqdm
 import numpy as np
 import torch
@@ -43,6 +44,85 @@ logging.basicConfig(
     level=logging.INFO, format="[%(asctime)s - %(name)s - %(levelname)s - %(message)s]"
 )
 logger = logging.getLogger(__name__)
+
+
+def _to_uint8_image(image):
+    image = np.asarray(image)
+    if image.dtype != np.uint8:
+        if image.max() <= 1.0:
+            image = image * 255.0
+        image = np.clip(image, 0, 255).astype(np.uint8)
+    if image.ndim == 2:
+        image = np.repeat(image[..., None], 3, axis=-1)
+    if image.ndim == 3 and image.shape[-1] == 4:
+        image = image[..., :3]
+    return image
+
+
+def _save_png(image, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    Image.fromarray(_to_uint8_image(image)).save(path)
+
+
+class PerspectiveDatasetWriter:
+    def __init__(self, dataset_root, rank):
+        self.dataset_root = dataset_root
+        self.samples_root = os.path.join(dataset_root, "samples")
+        os.makedirs(self.samples_root, exist_ok=True)
+        self.manifest_path = os.path.join(dataset_root, f"samples_rank{rank}.jsonl")
+        self.manifest_file = open(self.manifest_path, "w")
+
+    def save_sample(
+        self,
+        task_id,
+        task_description,
+        episode_idx,
+        global_episode_idx,
+        decision_step_idx,
+        env_step_idx,
+        agentview_image,
+        gt_perspective_image,
+        wrist_image=None,
+    ):
+        sample_dir = os.path.join(
+            self.samples_root,
+            f"task{task_id:02d}",
+            f"episode{episode_idx + 1:03d}",
+            f"step{decision_step_idx:04d}",
+        )
+        agentview_path = os.path.join(sample_dir, "input_agentview.png")
+        gt_perspective_path = os.path.join(sample_dir, "gt_perspective.png")
+        _save_png(agentview_image, agentview_path)
+        _save_png(gt_perspective_image, gt_perspective_path)
+
+        wrist_rel_path = None
+        if wrist_image is not None:
+            wrist_path = os.path.join(sample_dir, "input_wrist.png")
+            _save_png(wrist_image, wrist_path)
+            wrist_rel_path = os.path.relpath(wrist_path, self.dataset_root)
+
+        return {
+            "task_id": task_id,
+            "task_description": task_description,
+            "episode_idx": episode_idx,
+            "global_episode_idx": global_episode_idx,
+            "decision_step_idx": decision_step_idx,
+            "env_step_idx": env_step_idx,
+            "input_agentview_path": os.path.relpath(agentview_path, self.dataset_root),
+            "gt_perspective_path": os.path.relpath(gt_perspective_path, self.dataset_root),
+            "input_wrist_path": wrist_rel_path,
+        }
+
+    def finalize_episode(self, records, episode_success, episode_error=None):
+        for record in records:
+            item = dict(record)
+            item["episode_success"] = bool(episode_success)
+            item["episode_error"] = episode_error
+            self.manifest_file.write(json.dumps(item) + "\n")
+        self.manifest_file.flush()
+
+    def close(self):
+        self.manifest_file.close()
 
 
 def _decode_subgoal_images_from_text(model, thought_text):
@@ -198,6 +278,8 @@ def prepare_observation(obs):
 
 
 def obs_key_to_camera_name(obs_key):
+    if obs_key == "gripper_image":
+        return "robot0_eye_in_hand"
     if not obs_key.endswith("_image"):
         raise ValueError(f"Unexpected observation key format: {obs_key}")
     return obs_key[: -len("_image")]
@@ -221,6 +303,7 @@ def evaluate(
     perspective_eval=False,
     perspective_obs_key="robot0_eye_in_hand_image",
     camera_resolution=256,
+    dataset_writer=None,
 ):
     os.makedirs(local_log_dir, exist_ok=True)
     log_path = os.path.join(local_log_dir, f"eval_rank{rank}.txt")
@@ -294,10 +377,15 @@ def evaluate(
             model.reset()
 
             obs = env.set_init_state(initial_states[episode_idx])
+            _, global_episode_idx = episode_is_assigned(
+                task_id, episode_idx, num_trials_per_task, rank, world_size
+            )
             t = 0
             replay_images = []
             subgoal_gif_frames = []
-            post_action_images = []
+            reference_images = []
+            episode_dataset_records = []
+            decision_step_idx = 0
             done = False
             error = None
 
@@ -325,8 +413,37 @@ def evaluate(
                         replay_images.append(img)
 
                     if action_counter == 0:
+                        target_perspective_image = None
+                        if perspective_eval or dataset_writer is not None:
+                            target_perspective_image = get_libero_camera_image(obs, perspective_obs_key)
+                        if debug and model.use_cot:
+                            if perspective_eval:
+                                reference_images.append(target_perspective_image)
+                            else:
+                                reference_images.append(get_libero_image(obs))
+                        if dataset_writer is not None:
+                            episode_dataset_records.append(
+                                dataset_writer.save_sample(
+                                    task_id=task_id,
+                                    task_description=task_description,
+                                    episode_idx=episode_idx,
+                                    global_episode_idx=global_episode_idx,
+                                    decision_step_idx=decision_step_idx,
+                                    env_step_idx=t,
+                                    agentview_image=img,
+                                    gt_perspective_image=target_perspective_image,
+                                    wrist_image=observation.get("wrist_image"),
+                                )
+                            )
+                            decision_step_idx += 1
+                        step_output = model.step(observation, task_description)
+                        if isinstance(step_output, tuple):
+                            action = step_output[0]
+                            if len(step_output) > 1:
+                                thought = step_output[1]
+                        else:
+                            action = step_output
                         if model.use_cot:
-                            action, thought = model.step(observation, task_description)
                             if debug:
                                 pred_dir = os.path.join(
                                     local_log_dir,
@@ -341,20 +458,11 @@ def evaluate(
                                 )
                                 if gif_frames:
                                     subgoal_gif_frames.extend(gif_frames)
-                        else:
-                            action = model.step(observation, task_description)
                         action_counter = action.shape[0]
 
                     step_action = action[-action_counter]
                     obs, reward, done, info = env.step(step_action.tolist())
                     action_counter -= 1
-                    if debug and model.use_cot and action_counter == 0:
-                        if perspective_eval:
-                            post_action_images.append(
-                                get_libero_camera_image(obs, perspective_obs_key)
-                            )
-                        else:
-                            post_action_images.append(get_libero_image(obs))
                     if done:
                         task_successes += 1
                         total_successes += 1
@@ -387,7 +495,7 @@ def evaluate(
                     subgoal_gif_dir, f"task{task_id}_episode{episode_idx + 1}_{done}.gif"
                 )
                 save_rollout_gif(subgoal_gif_frames, subgoal_gif_path, fps=15)
-            if debug and model.use_cot and post_action_images:
+            if debug and model.use_cot and reference_images:
                 real_state_dir = os.path.join(
                     local_log_dir,
                     "real_states_perspective" if perspective_eval else "real_states",
@@ -396,11 +504,14 @@ def evaluate(
                 real_state_path = os.path.join(
                     real_state_dir, f"task{task_id}_episode{episode_idx + 1}_{done}.gif"
                 )
-                save_rollout_gif(post_action_images, real_state_path, fps=15)
+                save_rollout_gif(reference_images, real_state_path, fps=15)
+            if dataset_writer is not None:
+                dataset_writer.finalize_episode(
+                    episode_dataset_records,
+                    episode_success=done,
+                    episode_error=error,
+                )
 
-            _, global_episode_idx = episode_is_assigned(
-                task_id, episode_idx, num_trials_per_task, rank, world_size
-            )
             result = {
                 "task_id": task_id,
                 "task_description": task_description,
@@ -461,6 +572,17 @@ def parse_args():
         help="Save predicted images and real states from a selected perspective view.",
     )
     parser.add_argument(
+        "--dump_perspective_eval_dataset",
+        action="store_true",
+        help="Save input agentview and GT perspective images at each model query for offline image-generation evaluation.",
+    )
+    parser.add_argument(
+        "--dataset_dirname",
+        type=str,
+        default="perspective_eval_dataset",
+        help="Subdirectory name under the run log dir for dumped offline perspective-eval samples.",
+    )
+    parser.add_argument(
         "--perspective_obs_key",
         type=str,
         default="robot0_eye_in_hand_image",
@@ -517,6 +639,11 @@ def parse_args():
         help="Enable CoT-style evaluation (subgoal reasoning).",
     )
     parser.add_argument(
+        "--with_perspective_gen",
+        action="store_true",
+        help="Generate perspective-view image tokens autoregressively before generating actions.",
+    )
+    parser.add_argument(
         "--no_gripper",
         action="store_true",
         help="Not to use gripper image"
@@ -546,7 +673,12 @@ def parse_args():
         help="Optional run id to share across ranks.",
     )
     parser.add_argument("--seed", type=int, default=0)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.with_cot and args.with_perspective_gen:
+        parser.error("--with_cot and --with_perspective_gen are mutually exclusive.")
+    if args.dump_perspective_eval_dataset and not args.perspective_eval:
+        parser.error("--dump_perspective_eval_dataset requires --perspective_eval.")
+    return args
 
 
 def get_run_id(args):
@@ -577,7 +709,7 @@ def main():
     os.makedirs(cache_root, exist_ok=True)
 
     run_id = get_run_id(args)
-    eval_log_dir = os.path.join(cache_root, "eval", run_id)
+    eval_log_dir = os.path.join(cache_root, run_id)
     os.makedirs(eval_log_dir, exist_ok=True)
 
     if rank == 0:
@@ -591,10 +723,33 @@ def main():
                     "world_size": world_size,
                     "results_pattern": "episodes_rank{rank}.jsonl",
                     "log_pattern": "eval_rank{rank}.txt",
+                    "perspective_eval": args.perspective_eval,
+                    "dump_perspective_eval_dataset": args.dump_perspective_eval_dataset,
                 },
                 f,
                 indent=2,
             )
+
+    dataset_writer = None
+    if args.dump_perspective_eval_dataset:
+        dataset_root = os.path.join(eval_log_dir, args.dataset_dirname)
+        os.makedirs(dataset_root, exist_ok=True)
+        if rank == 0:
+            dataset_meta_path = os.path.join(dataset_root, "meta_info.json")
+            with open(dataset_meta_path, "w") as f:
+                json.dump(
+                    {
+                        "run_id": run_id,
+                        "task_suite_name": args.task_suite_name,
+                        "perspective_obs_key": args.perspective_obs_key,
+                        "camera_resolution": args.camera_resolution,
+                        "num_trials_per_task": args.num_trials_per_task,
+                        "manifest_pattern": "samples_rank{rank}.jsonl",
+                    },
+                    f,
+                    indent=2,
+                )
+        dataset_writer = PerspectiveDatasetWriter(dataset_root=dataset_root, rank=rank)
 
     model = EmuVLAModel(
         emu_hub=args.emu_hub,
@@ -603,23 +758,29 @@ def main():
         device=torch.device("cuda"),
         use_cot=args.with_cot,
         cot_max_new_tokens=args.cot_max_new_tokens,
+        use_perspective_gen=args.with_perspective_gen,
         use_gripper= not args.no_gripper
     )
 
-    total_episodes, total_successes = evaluate(
-        model=model,
-        task_suite_name=args.task_suite_name,
-        local_log_dir=eval_log_dir,
-        rank=rank,
-        world_size=world_size,
-        render_gpu_device_id=render_gpu_device_id,
-        num_trials_per_task=args.num_trials_per_task,
-        num_steps_wait=args.num_steps_wait,
-        debug=args.debug,
-        perspective_eval=args.perspective_eval,
-        perspective_obs_key=args.perspective_obs_key,
-        camera_resolution=args.camera_resolution,
-    )
+    try:
+        total_episodes, total_successes = evaluate(
+            model=model,
+            task_suite_name=args.task_suite_name,
+            local_log_dir=eval_log_dir,
+            rank=rank,
+            world_size=world_size,
+            render_gpu_device_id=render_gpu_device_id,
+            num_trials_per_task=args.num_trials_per_task,
+            num_steps_wait=args.num_steps_wait,
+            debug=args.debug,
+            perspective_eval=args.perspective_eval,
+            perspective_obs_key=args.perspective_obs_key,
+            camera_resolution=args.camera_resolution,
+            dataset_writer=dataset_writer,
+        )
+    finally:
+        if dataset_writer is not None:
+            dataset_writer.close()
 
     if dist.is_available() and dist.is_initialized():
         totals = torch.tensor([total_episodes, total_successes], device="cuda")

@@ -2,14 +2,14 @@
 set -euo pipefail
 
 TEACHER_FORCE_MODE=${TEACHER_FORCE_MODE:-"perspective"}
-ckpt_dir=${ckpt_dir:-"/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/logs/UNIVLA_LIBERO_PERSPECTIVE_BS192_12k/checkpoint-8000"}
-CACHE_ROOT=${CACHE_ROOT:-"/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/logs/libero/UNIVLA_LIBERO_PERSPECTIVE_BS192_12k/checkpoint-8000/spatial_occluded_teacher_forcing"}
+ckpt_dir=${ckpt_dir:-"/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//UniVLA/logs/UNIVLA_LIBERO_PERSPECTIVE_BS192_12k/checkpoint-8000"}
+CACHE_ROOT=${CACHE_ROOT:-"/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//UniVLA/logs/libero/UNIVLA_LIBERO_PERSPECTIVE_BS192_12k/checkpoint-8000/spatial_occluded_teacher_forcing"}
 TASK_SUITE_NAME=${TASK_SUITE_NAME:-"libero_spatial_occluded"}
 MASTER_PORT=${MASTER_PORT:-29541}
 GPUS_PER_NODE=${GPUS_PER_NODE:-4}
 NUM_TRIALS_PER_TASK=${NUM_TRIALS_PER_TASK:-10}
 PERSPECTIVE_OBS_KEY="robot0_eye_in_hand_image"
-TEACHER_DATA_PATH=${TEACHER_DATA_PATH:-"/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/data_storage/meta/libero_all_norm.pkl"}
+TEACHER_DATA_PATH=${TEACHER_DATA_PATH:-"/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//UniVLA/data_storage/meta/libero_all_norm.pkl"}
 TEACHER_IMAGE_KEY=${TEACHER_IMAGE_KEY:-"image"}
 TEACHER_MIN_H=${TEACHER_MIN_H:-5}
 TEACHER_MAX_H=${TEACHER_MAX_H:-10}
@@ -27,8 +27,8 @@ CAMERA_RESOLUTION=${CAMERA_RESOLUTION:-200}
 #     bash reference/RoboVLMs/scripts/run_eval_libero_univla_multi_gpu_teacher_force.sh
 
 NUM_STEPS_WAIT=${NUM_STEPS_WAIT:-10}
-VISION_HUB=${VISION_HUB:-/inspire/hdd/global_user/chenfangke-253108540237/tsli/huggingface/Emu3-VisionTokenizer}
-VQ_HUB=${VQ_HUB:-/inspire/hdd/global_user/chenfangke-253108540237/tsli/huggingface/Emu3-Stage1}
+VISION_HUB=${VISION_HUB:-/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//huggingface/Emu3-VisionTokenizer}
+VQ_HUB=${VQ_HUB:-/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//huggingface/Emu3-Stage1}
 
 # export NCCL_P2P_DISABLE=1
 # export NCCL_IB_DISABLE=1

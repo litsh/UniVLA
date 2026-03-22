@@ -14,3 +14,6 @@ tiktoken==0.6.0
 pillow
 gradio==4.44.0
 numpydantic==1.6.8
+
+# Evaluation Metrics
+lpips

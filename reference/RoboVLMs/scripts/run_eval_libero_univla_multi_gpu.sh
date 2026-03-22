@@ -2,18 +2,19 @@
 set -euo pipefail
 
 # Remember to add --no_gripper to remove gripper images
-ckpt_dir="/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/logs/UNIVLA_LIBERO_IMG_BS192_8k_reproduced"
-CACHE_ROOT="/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/logs/libero/UNIVLA_LIBERO_IMG_BS192_8k_reproduced/checkpoint-8000/object_debug"
-TASK_SUITE_NAME="libero_object"
-MASTER_PORT=29524
+ckpt_dir="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/UNIVLA_LIBERO_IMG_BS192_10k_reproduced_V2/checkpoint-8000"
+CACHE_ROOT="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//UniVLA/logs/libero/UNIVLA_LIBERO_IMG_BS192_10k_reproduced_V2/checkpoint-8000/spatial"
+TASK_SUITE_NAME="libero_spatial"
+MASTER_PORT=29538
 GPUS_PER_NODE=4
+export CUDA_VISIBLE_DEVICES=4,5,6,7
 NUM_TRIALS_PER_TASK=10
 
 
 
 NUM_STEPS_WAIT=${NUM_STEPS_WAIT:-10}
-VISION_HUB=${VISION_HUB:-/inspire/hdd/global_user/chenfangke-253108540237/tsli/huggingface/Emu3-VisionTokenizer}
-VQ_HUB=${VQ_HUB:-/inspire/hdd/global_user/chenfangke-253108540237/tsli/huggingface/Emu3-Stage1}
+VISION_HUB=${VISION_HUB:-/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//huggingface/Emu3-VisionTokenizer}
+VQ_HUB=${VQ_HUB:-/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//huggingface/Emu3-Stage1}
 
 # export NCCL_P2P_DISABLE=1
 # export NCCL_IB_DISABLE=1  # If you don't have InfiniBand

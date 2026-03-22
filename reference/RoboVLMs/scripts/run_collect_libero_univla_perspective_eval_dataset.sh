@@ -1,24 +1,20 @@
 #!/bin/bash
-# set -euo pipefai
+set -euo pipefail
 
-# Perspective-VLA evaluation (predict target-view image tokens, then actions)
-ckpt_dir="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/UNIVLA_LIBERO_PERSPECTIVE_gripper_BS192_12k/checkpoint-8000"
-CACHE_ROOT="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/libero/UNIVLA_LIBERO_PERSPECTIVE_gripper_BS192_12k/checkpoint-8000/GT_images/goal"
-TASK_SUITE_NAME="libero_goal"
-PERSPECTIVE_OBS_KEY="robot0_eye_in_hand_image"  # alias for LIBERO robot0_eye_in_hand_image
-MASTER_PORT=29603
-GPUS_PER_NODE=4
-export CUDA_VISIBLE_DEVICES=0,1,2,3
-NUM_TRIALS_PER_TASK=10
+# Collect a fixed offline evaluation set by rolling out an older joint image+action model.
+
+ckpt_dir=${ckpt_dir:-"/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/UNIVLA_LIBERO_PERSPECTIVE_gripper_BS192_12k/checkpoint-8000"}
+CACHE_ROOT=${CACHE_ROOT:-"/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/libero/offline_perspective_evalset"}
+TASK_SUITE_NAME=${TASK_SUITE_NAME:-"libero_goal"}
+PERSPECTIVE_OBS_KEY=${PERSPECTIVE_OBS_KEY:-"robot0_eye_in_hand_image"}
+MASTER_PORT=${MASTER_PORT:-29617}
+GPUS_PER_NODE=${GPUS_PER_NODE:-8}
+NUM_TRIALS_PER_TASK=${NUM_TRIALS_PER_TASK:-10}
 CAMERA_RESOLUTION=${CAMERA_RESOLUTION:-200}
-
 NUM_STEPS_WAIT=${NUM_STEPS_WAIT:-10}
+DATASET_DIRNAME=${DATASET_DIRNAME:-"goal_eval_set"}
 VISION_HUB=${VISION_HUB:-/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/huggingface/Emu3-VisionTokenizer}
 VQ_HUB=${VQ_HUB:-/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/huggingface/Emu3-Stage1}
-
-# export MUJOCO_GL=egl
-# export PYOPENGL_PLATFORM=egl
-# export __GL_VND_DISPATCH_LIBRARY_NAME=nvidia
 
 export MUJOCO_GL=osmesa
 export MJLIB_PATH=$HOME/.mujoco/mujoco200/bin/libmujoco200.so
@@ -52,10 +48,5 @@ torchrun \
   --perspective_obs_key "$PERSPECTIVE_OBS_KEY" \
   --camera_resolution "$CAMERA_RESOLUTION" \
   --perspective_eval \
-  --debug
-  
-  
-  # --perspective_eval \
-  # --debug
-  
-#  --debug
+  --dump_perspective_eval_dataset \
+  --dataset_dirname "$DATASET_DIRNAME"
