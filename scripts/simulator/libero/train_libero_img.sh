@@ -46,6 +46,7 @@ torchrun \
     --gradient_accumulation_steps ${grad_accumulation_steps} \
     --save_strategy steps \
     --save_steps 2000 \
+    --save_total_limit 3 \
     --eval_strategy no \
     --apply_loss_on_only_vision False \
     --apply_loss_on_only_action True \

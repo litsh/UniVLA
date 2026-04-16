@@ -149,15 +149,15 @@ def main():
         args.smooth_window,
         args.max_points,
     )
-    plot_series(
-        ax_total,
-        rows,
-        "loss/groups_unweighted_total",
-        "group unweighted total",
-        "tab:blue",
-        args.smooth_window,
-        args.max_points,
-    )
+    # plot_series(
+    #     ax_total,
+    #     rows,
+    #     "loss/groups_unweighted_total",
+    #     "group unweighted total",
+    #     "tab:blue",
+    #     args.smooth_window,
+    #     args.max_points,
+    # )
     ax_total.set_title("Aggregate Losses")
     ax_total.set_xlabel("step")
     ax_total.set_ylabel("loss")

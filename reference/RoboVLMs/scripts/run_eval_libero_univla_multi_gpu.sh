@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # Remember to add --no_gripper to remove gripper images
-ckpt_dir="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/UNIVLA_LIBERO_IMG_BS192_10k_reproduced_V2/checkpoint-8000"
-CACHE_ROOT="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//UniVLA/logs/libero/UNIVLA_LIBERO_IMG_BS192_10k_reproduced_V2/checkpoint-8000/spatial"
-TASK_SUITE_NAME="libero_spatial"
-MASTER_PORT=29538
+ckpt_dir="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/UNIVLA_LIBERO_IMG_BS192_8k_use_gripper=False/checkpoint-8000"
+CACHE_ROOT="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//UniVLA/logs/libero/UNIVLA_LIBERO_IMG_BS192_8k_use_gripper=False/checkpoint-8000/spatial_occluded"
+TASK_SUITE_NAME="libero_spatial_occluded"
+MASTER_PORT=29542
 GPUS_PER_NODE=4
 export CUDA_VISIBLE_DEVICES=4,5,6,7
 NUM_TRIALS_PER_TASK=10
@@ -48,7 +48,8 @@ torchrun \
   --emu_hub "$ckpt_dir" \
   --cache_root "$CACHE_ROOT" \
   --vision_hub "$VISION_HUB" \
-  --vq_hub "$VQ_HUB" 
+  --vq_hub "$VQ_HUB" \
+  --no_gripper
   
   # --with_cot \
   # --cot_max_new_tokens 1024 \

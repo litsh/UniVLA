@@ -232,7 +232,7 @@ data_config = {
         'SIZE': (200, 200),
         'VIDEO_ROOT': os.environ.get(
             'LIBERO_VIDEO_ROOT',
-            '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_all'
+            '/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/data_storage/libero_aug_stage1/libero_all'
         ),
         'VIDEO_CODES_SAVE': os.environ.get(
             'LIBERO_CODES_SAVE',

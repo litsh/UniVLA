@@ -2,15 +2,17 @@
 set -euo pipefail
 
 TEACHER_FORCE_MODE=${TEACHER_FORCE_MODE:-"perspective"}
-ckpt_dir=${ckpt_dir:-"/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//UniVLA/logs/UNIVLA_LIBERO_PERSPECTIVE_BS192_12k/checkpoint-8000"}
-CACHE_ROOT=${CACHE_ROOT:-"/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//UniVLA/logs/libero/UNIVLA_LIBERO_PERSPECTIVE_BS192_12k/checkpoint-8000/spatial_occluded_teacher_forcing"}
+ckpt_dir=${ckpt_dir:-"/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/gripper_WEIGHTED_VC=0.75---VS=0.15---AC=1.0---AS=0.2---Stage1=4000steps---AugmentedData/checkpoint-6000"}
+CACHE_ROOT=${CACHE_ROOT:-"/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//UniVLA/logs/libero/gripper_WEIGHTED_VC=0.75---VS=0.15---AC=1.0---AS=0.2---Stage1=4000steps---AugmentedData/checkpoint-6000/teacher_forcing/spatial_occluded"}
 TASK_SUITE_NAME=${TASK_SUITE_NAME:-"libero_spatial_occluded"}
-MASTER_PORT=${MASTER_PORT:-29541}
+MASTER_PORT=${MASTER_PORT:-29587}
+export CUDA_VISIBLE_DEVICES=4,5,6,7
 GPUS_PER_NODE=${GPUS_PER_NODE:-4}
 NUM_TRIALS_PER_TASK=${NUM_TRIALS_PER_TASK:-10}
 PERSPECTIVE_OBS_KEY="robot0_eye_in_hand_image"
-TEACHER_DATA_PATH=${TEACHER_DATA_PATH:-"/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli//UniVLA/data_storage/meta/libero_all_norm.pkl"}
-TEACHER_IMAGE_KEY=${TEACHER_IMAGE_KEY:-"image"}
+
+TEACHER_DATA_PATH=${TEACHER_DATA_PATH:-""}
+TEACHER_IMAGE_KEY=${TEACHER_IMAGE_KEY:-""}
 TEACHER_MIN_H=${TEACHER_MIN_H:-5}
 TEACHER_MAX_H=${TEACHER_MAX_H:-10}
 CAMERA_RESOLUTION=${CAMERA_RESOLUTION:-200}

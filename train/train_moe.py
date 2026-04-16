@@ -13,7 +13,10 @@ from emu3.mllm import Emu3Config, Emu3Tokenizer, Emu3ForCausalLM, Emu3MoE, Emu3M
 from transformers import AutoModel,Trainer
 from datasets import Emu3WorldModelDataset,Emu3RealRobotDataset,Emu3CoTDataset,Emu3PerspectiveDataset
 from torch.utils.data import WeightedRandomSampler, DataLoader
-
+import torch
+import numpy
+# Allowlist the specific numpy functions that are causing the crash
+torch.serialization.add_safe_globals([numpy.core.multiarray._reconstruct, numpy.ndarray, numpy.dtype, numpy.dtypes.UInt32DType])
 class TokenLossLoggingTrainer(Trainer):
     def __init__(
         self,
@@ -29,10 +32,13 @@ class TokenLossLoggingTrainer(Trainer):
         perspective_strict: bool = False,
         ignore_index: int = -100,
         use_group_loss_weighting: bool = False,
+        group_loss_mode: str = "four_group",
         visual_content_loss_weight: float = 1.0,
         visual_special_loss_weight: float = 1.0,
         action_content_loss_weight: float = 1.0,
         action_special_loss_weight: float = 1.0,
+        visual_loss_weight: float = 1.0,
+        action_loss_weight: float = 1.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -47,10 +53,18 @@ class TokenLossLoggingTrainer(Trainer):
         self.perspective_strict = perspective_strict
         self.ignore_index = ignore_index
         self.use_group_loss_weighting = use_group_loss_weighting
+        if group_loss_mode not in {"four_group", "two_group"}:
+            raise ValueError(
+                f"Unsupported group_loss_mode: {group_loss_mode}. "
+                "Expected one of {'four_group', 'two_group'}."
+            )
+        self.group_loss_mode = group_loss_mode
         self.visual_content_loss_weight = visual_content_loss_weight
         self.visual_special_loss_weight = visual_special_loss_weight
         self.action_content_loss_weight = action_content_loss_weight
         self.action_special_loss_weight = action_special_loss_weight
+        self.visual_loss_weight = visual_loss_weight
+        self.action_loss_weight = action_loss_weight
         self._last_token_losses = {}
 
     def _masked_mean(self, loss_per_token, mask):
@@ -175,6 +189,8 @@ class TokenLossLoggingTrainer(Trainer):
 
                 input_ids = inputs.get("input_ids")
                 attention_mask = inputs.get("attention_mask")
+                visual_with_special_mask = torch.zeros_like(shift_labels, dtype=torch.bool)
+                action_with_special_mask = torch.zeros_like(shift_labels, dtype=torch.bool)
                 visual_special_mask = torch.zeros_like(shift_labels, dtype=torch.bool)
                 action_special_mask = torch.zeros_like(shift_labels, dtype=torch.bool)
                 if input_ids is not None and attention_mask is not None:
@@ -189,36 +205,61 @@ class TokenLossLoggingTrainer(Trainer):
                     action_with_special_mask = action_with_special_mask & shift_attention_mask & valid_mask
                     action_special_mask = action_with_special_mask & (~action_content_mask)
 
-                group_losses = {}
-                visual_content_loss, _ = self._masked_mean(loss_per_token, visual_content_mask)
-                action_content_loss, _ = self._masked_mean(loss_per_token, action_content_mask)
-                visual_special_loss, _ = self._masked_mean(loss_per_token, visual_special_mask)
-                action_special_loss, _ = self._masked_mean(loss_per_token, action_special_mask)
+                if self.group_loss_mode == "four_group":
+                    group_losses = {}
+                    visual_content_loss, _ = self._masked_mean(loss_per_token, visual_content_mask)
+                    action_content_loss, _ = self._masked_mean(loss_per_token, action_content_mask)
+                    visual_special_loss, _ = self._masked_mean(loss_per_token, visual_special_mask)
+                    action_special_loss, _ = self._masked_mean(loss_per_token, action_special_mask)
 
-                group_losses["loss/visual_content"] = visual_content_loss
-                group_losses["loss/action_content"] = action_content_loss
-                group_losses["loss/visual_special"] = visual_special_loss
-                group_losses["loss/action_special"] = action_special_loss
-                group_losses["loss/groups_unweighted_total"] = (
-                    visual_content_loss
-                    + action_content_loss
-                    + visual_special_loss
-                    + action_special_loss
-                )
-
-                self._last_token_losses = {
-                    key: value.detach() for key, value in group_losses.items()
-                }
-
-                if self.use_group_loss_weighting:
-                    weighted_loss = (
-                        self.visual_content_loss_weight * visual_content_loss
-                        + self.visual_special_loss_weight * visual_special_loss
-                        + self.action_content_loss_weight * action_content_loss
-                        + self.action_special_loss_weight * action_special_loss
+                    group_losses["loss/visual_content"] = visual_content_loss
+                    group_losses["loss/action_content"] = action_content_loss
+                    group_losses["loss/visual_special"] = visual_special_loss
+                    group_losses["loss/action_special"] = action_special_loss
+                    group_losses["loss/groups_unweighted_total"] = (
+                        visual_content_loss
+                        + action_content_loss
+                        + visual_special_loss
+                        + action_special_loss
                     )
-                    self._last_token_losses["loss/groups_weighted_total"] = weighted_loss.detach()
-                    loss = weighted_loss
+
+                    self._last_token_losses = {
+                        key: value.detach() for key, value in group_losses.items()
+                    }
+
+                    if self.use_group_loss_weighting:
+                        weighted_loss = (
+                            self.visual_content_loss_weight * visual_content_loss
+                            + self.visual_special_loss_weight * visual_special_loss
+                            + self.action_content_loss_weight * action_content_loss
+                            + self.action_special_loss_weight * action_special_loss
+                        )
+                        self._last_token_losses["loss/groups_weighted_total"] = weighted_loss.detach()
+                        loss = weighted_loss
+                else:
+                    group_losses = {}
+                    visual_mask = visual_content_mask | visual_special_mask
+                    action_mask = action_content_mask | action_special_mask
+                    visual_loss, _ = self._masked_mean(loss_per_token, visual_mask)
+                    action_loss, _ = self._masked_mean(loss_per_token, action_mask)
+
+                    group_losses["loss/visual"] = visual_loss
+                    group_losses["loss/action"] = action_loss
+                    group_losses["loss/groups_unweighted_total"] = (
+                        visual_loss + action_loss
+                    )
+
+                    self._last_token_losses = {
+                        key: value.detach() for key, value in group_losses.items()
+                    }
+
+                    if self.use_group_loss_weighting:
+                        weighted_loss = (
+                            self.visual_loss_weight * visual_loss
+                            + self.action_loss_weight * action_loss
+                        )
+                        self._last_token_losses["loss/groups_weighted_total"] = weighted_loss.detach()
+                        loss = weighted_loss
 
         if return_outputs:
             return loss, outputs
@@ -286,11 +327,15 @@ class DataArguments:
     with_cot: bool = field(default=False)
     with_perspective: bool = field(default=False)
     perspective_image_key: str = field(default="gripper_image")
+    perspective_use_vanilla_prefix: bool = field(default=False)
     use_group_loss_weighting: bool = field(default=False)
+    group_loss_mode: str = field(default="four_group")
     visual_content_loss_weight: float = field(default=1.0)
     visual_special_loss_weight: float = field(default=1.0)
     action_content_loss_weight: float = field(default=1.0)
     action_special_loss_weight: float = field(default=1.0)
+    visual_loss_weight: float = field(default=1.0)
+    action_loss_weight: float = field(default=1.0)
 
 @dataclass
 class TrainingArguments(tf.TrainingArguments):
@@ -456,10 +501,13 @@ def train():
             perspective_strict=data_args.with_perspective,
             ignore_index=data_args.ignore_index,
             use_group_loss_weighting=data_args.use_group_loss_weighting,
+            group_loss_mode=data_args.group_loss_mode,
             visual_content_loss_weight=data_args.visual_content_loss_weight,
             visual_special_loss_weight=data_args.visual_special_loss_weight,
             action_content_loss_weight=data_args.action_content_loss_weight,
             action_special_loss_weight=data_args.action_special_loss_weight,
+            visual_loss_weight=data_args.visual_loss_weight,
+            action_loss_weight=data_args.action_loss_weight,
         )
     else:
         # Setup Trainer
@@ -479,10 +527,13 @@ def train():
             perspective_strict=data_args.with_perspective,
             ignore_index=data_args.ignore_index,
             use_group_loss_weighting=data_args.use_group_loss_weighting,
+            group_loss_mode=data_args.group_loss_mode,
             visual_content_loss_weight=data_args.visual_content_loss_weight,
             visual_special_loss_weight=data_args.visual_special_loss_weight,
             action_content_loss_weight=data_args.action_content_loss_weight,
             action_special_loss_weight=data_args.action_special_loss_weight,
+            visual_loss_weight=data_args.visual_loss_weight,
+            action_loss_weight=data_args.action_loss_weight,
         )
 
     # Check if resuming from checkpoint

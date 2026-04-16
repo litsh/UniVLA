@@ -986,7 +986,7 @@ class Emu3CoTDataset(Emu3SFTDataset):
 
             if "labels" in sample:
                 sample["labels"] = self.pad_tensor(sample["labels"], self.tokenizer.model_max_length, self.args.ignore_index)
-        # with open("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/cot_debug/debug_training_cot_vla_prompt.txt", "w") as f:
+        # with open("/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/cot_debug/debug_training_cot_vla_prompt.txt", "w") as f:
         #     out = self.tokenizer.decode(sample["input_ids"], skip_special_tokens=False)
         #     print(out, file=f)
         #     exit(0)
@@ -997,6 +997,7 @@ class Emu3PerspectiveDataset(Emu3SFTDataset):
     def __init__(self, args: "DataArguments", tokenizer):
         super().__init__(args, tokenizer=tokenizer)
         self.perspective_image_key = getattr(args, "perspective_image_key", "gripper_image")
+        self.perspective_use_vanilla_prefix = getattr(args, "perspective_use_vanilla_prefix", False)
 
     def _perspective_view_name(self):
         view_name = self.perspective_image_key
@@ -1075,19 +1076,30 @@ class Emu3PerspectiveDataset(Emu3SFTDataset):
         image_tokens = image_tokens[0:self.T, ...]
         image_prompt = self.format_video_prompt(image_tokens)
 
-        prompt = (
-            f"Given the image of the current state, what actions should the robot take to {prompt}? "
-            "Output the low-level action(s) to take."
-        )
-        text_prompt = self.tokenizer(
-            self.tokenizer.bos_token + prompt,
-            padding=False,
-            return_token_type_ids=False,
-            return_tensors="pt",
-        )
-        sample_input_ids = text_prompt["input_ids"][0]
-        sample_attention_mask = text_prompt["attention_mask"][0]
-        labels = torch.full_like(sample_input_ids, self.args.ignore_index)
+        if self.perspective_use_vanilla_prefix:
+            prefix_prompt = self.tokenizer(
+                self.tokenizer.bos_token + prompt + image_prompt,
+                padding=False,
+                return_token_type_ids=False,
+                return_tensors="pt",
+            )
+            sample_input_ids = prefix_prompt["input_ids"][0]
+            sample_attention_mask = prefix_prompt["attention_mask"][0]
+            labels = torch.full_like(sample_input_ids, self.args.ignore_index)
+        else:
+            prompt = (
+                f"Given the image of the current state, what actions should the robot take to {prompt}? "
+                "Output the low-level action(s) to take."
+            )
+            text_prompt = self.tokenizer(
+                self.tokenizer.bos_token + prompt,
+                padding=False,
+                return_token_type_ids=False,
+                return_tensors="pt",
+            )
+            sample_input_ids = text_prompt["input_ids"][0]
+            sample_attention_mask = text_prompt["attention_mask"][0]
+            labels = torch.full_like(sample_input_ids, self.args.ignore_index)
 
         def append_segment(segment, supervise=True):
             nonlocal sample_input_ids, sample_attention_mask, labels
@@ -1101,13 +1113,14 @@ class Emu3PerspectiveDataset(Emu3SFTDataset):
                 seg_labels = torch.full_like(seg_ids, self.args.ignore_index)
             labels = torch.cat([labels, seg_labels], dim=-1)
 
-        obs_prompt = self.tokenizer(
-            image_prompt,
-            padding=False,
-            return_token_type_ids=False,
-            return_tensors="pt",
-        )
-        append_segment(obs_prompt, supervise=False)
+        if not self.perspective_use_vanilla_prefix:
+            obs_prompt = self.tokenizer(
+                image_prompt,
+                padding=False,
+                return_token_type_ids=False,
+                return_tensors="pt",
+            )
+            append_segment(obs_prompt, supervise=False)
 
         view_name = self._perspective_view_name()
         # perspective_text = f"The current state from {view_name} is: "
@@ -1159,7 +1172,7 @@ class Emu3PerspectiveDataset(Emu3SFTDataset):
 
         if "labels" in sample:
             sample["labels"] = self.pad_tensor(sample["labels"], self.tokenizer.model_max_length, self.args.ignore_index)
-        # with open("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/cot_debug/debug_training_perspective_vla_prompt.txt", "w") as f:
+        # with open("/inspire/hdd/global_user/chenfangke-253108540237/tsli/UniVLA/cot_debug/train_prompt.txt", "w") as f:
         #     out = self.tokenizer.decode(sample["input_ids"], skip_special_tokens=False)
         #     print(out, file=f)
         #     exit(0)

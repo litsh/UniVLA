@@ -373,7 +373,8 @@ class EmuVLAModel:
 
         prompt_text = goal
         if self.use_cot or self.use_perspective_gen or perspective_image is not None:
-            prompt_text = f"Given the image of the current state, what actions should the robot take to {goal}? Output the low-level action(s) to take."
+            # prompt_text = f"Given the image of the current state, what actions should the robot take to {goal}? Output the low-level action(s) to take."
+            prompt_text = goal
             
         prompt,neg_prompt = prompt_text,""
 
@@ -575,7 +576,7 @@ class EmuVLAModel:
                 )
             # omit the eoa token
             orig_outputs = outputs[:, context_length:]
-            # with open("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/cot_debug/perspective_vla_eval_prompt.txt", "w") as f:
+            # with open("/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/cot_debug/eval_prompt.txt", "w") as f:
             #     print(
             #         self.tokenizer.decode(outputs[0], skip_special_tokens=False),
             #         file=f

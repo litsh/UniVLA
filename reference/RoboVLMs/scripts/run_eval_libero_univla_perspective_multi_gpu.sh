@@ -2,13 +2,13 @@
 # set -euo pipefai
 
 # Perspective-VLA evaluation (predict target-view image tokens, then actions)
-ckpt_dir="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/UNIVLA_LIBERO_PERSPECTIVE_gripper_BS192_12k/checkpoint-8000"
-CACHE_ROOT="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/libero/UNIVLA_LIBERO_PERSPECTIVE_gripper_BS192_12k/checkpoint-8000/GT_images/goal"
-TASK_SUITE_NAME="libero_goal"
+ckpt_dir="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/gripper_WEIGHTED_VC=1.0---VS=0.2---AC=1.0---AS=0.2---Stage1=4000stepsAugmentedData--Stage2=AugmentedData/checkpoint-6000"
+CACHE_ROOT="/inspire/hdd/project/socialsimulation/chenfangke-253108540237/tsli/UniVLA/logs/libero/gripper_WEIGHTED_VC=1.0---VS=0.2---AC=1.0---AS=0.2---Stage1=4000stepsAugmentedData--Stage2=AugmentedData/checkpoint-6000/goal_occluded"
+TASK_SUITE_NAME="libero_goal_occluded"
 PERSPECTIVE_OBS_KEY="robot0_eye_in_hand_image"  # alias for LIBERO robot0_eye_in_hand_image
-MASTER_PORT=29603
+MASTER_PORT=29722
 GPUS_PER_NODE=4
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+export CUDA_VISIBLE_DEVICES=4,5,6,7
 NUM_TRIALS_PER_TASK=10
 CAMERA_RESOLUTION=${CAMERA_RESOLUTION:-200}
 
@@ -50,12 +50,11 @@ torchrun \
   --cot_max_new_tokens 1024 \
   --no_gripper \
   --perspective_obs_key "$PERSPECTIVE_OBS_KEY" \
-  --camera_resolution "$CAMERA_RESOLUTION" \
-  --perspective_eval \
-  --debug
+  --camera_resolution "$CAMERA_RESOLUTION" 
   
   
-  # --perspective_eval \
-  # --debug
   
+#  \
+#   --perspective_eval \
+#   --debug 
 #  --debug

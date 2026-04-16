@@ -68,9 +68,10 @@ def main(
     language_dir = osp.join(dataset_path, "libero_all")
     vq_dir = osp.join(dataset_path, "libero_all_codes_200")
     gripper_vq_dir = osp.join(dataset_path, "libero_all_gripper_codes_200")
+    # uncomment to include extra views
     extra_view_specs = [
-        ("birdview_image", osp.join(dataset_path, "libero_all_birdview_codes_200")),
-        ("sideview_image", osp.join(dataset_path, "libero_all_sideview_codes_200"))
+        # ("birdview_image", osp.join(dataset_path, "libero_all_birdview_codes_200")),
+        # ("sideview_image", osp.join(dataset_path, "libero_all_sideview_codes_200"))
     ]
     for spec in extra_views or []:
         parts = spec.split("=", 1)
@@ -135,6 +136,8 @@ def main(
             extra_view_files[field_name] = view_files
         if missing_extra_view:
             print("No extra views")
+            print(scene_view_dir)
+            print(len(view_files), min_frames)
             continue
 
         cot_entries = []
@@ -151,7 +154,7 @@ def main(
             )
         if not cot_entries:
             print("No Cot entries")
-            continue
+            # continue
 
         sample = {
             "text": text,
